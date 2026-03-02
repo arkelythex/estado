@@ -1,4 +1,4 @@
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use civictech_auth::{AuthError, Principal, Role};
 
 use crate::{api_error::ApiError, state::AppState};
@@ -64,6 +64,7 @@ pub(crate) fn map_auth_error(error: AuthError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
 
     #[test]
     fn map_auth_error_sets_unauthorized_for_missing_token() {

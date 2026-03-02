@@ -2,6 +2,10 @@
 
 Civic tech open-source para Peru: transparencia, participacion y servicios publicos audit-first.
 
+<p align="center">
+  <img src="apps/web/public/images/ui/interface-desktop.png" alt="CivicTech Peru desktop interface" width="100%" />
+</p>
+
 ## Monorepo v5
 - Rust (Axum) core API for audit-critical flows
 - Next.js apps for public and admin surfaces
