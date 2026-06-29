@@ -1,0 +1,81 @@
+name: AI Code Review (GGA)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: gga-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gga-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install GGA
+        run: |
+          if command -v brew &>/dev/null; then
+            brew install gentleman-programming/tap/gga
+          else
+            curl -fsSL https://raw.githubusercontent.com/gentleman-programming/gentleman-guardian-angel/main/install.sh | bash
+          fi
+          gga --version
+
+      - name: Run GGA review (CI mode)
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PR mode: review all files in PR
+            gga run --pr-mode --diff-only
+          else
+            # Push mode: review HEAD commit
+            gga run --ci --diff-only
+          fi
+
+      - name: Post review results as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const reviewDir = '.gga/reviews';
+            let commentBody = '## 🤖 GGA AI Code Review\n\n';
+
+            if (fs.existsSync(reviewDir)) {
+              const files = fs.readdirSync(reviewDir).filter(f => f.endsWith('.md'));
+              if (files.length === 0) {
+                commentBody += '✅ No issues found.\n';
+              } else {
+                for (const file of files) {
+                  let content = fs.readFileSync(path.join(reviewDir, file), 'utf-8');
+                  // Sanitize potential PII before posting to public PR
+                  content = content.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[REDACTED-EMAIL]');
+                  content = content.replace(/\b\d{8,}\b/g, (m) => m.startsWith('20') && m.length === 10 ? '[REDACTED-PHONE]' : m);
+                  commentBody += content + '\n\n---\n\n';
+                }
+              }
+            } else {
+              commentBody += '✅ No issues found.\n';
+            }
+
+            commentBody += '\n> _Reviewed by Gentleman Guardian Angel v2.8.1 with DeepSeek V4 Flash_';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: commentBody
+            });
