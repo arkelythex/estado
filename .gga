@@ -2,7 +2,7 @@
 # AI Provider: DeepSeek V4 Flash via direct API
 
 # AI Provider for code review
-PROVIDER="deepseek:deepseek-chat"
+PROVIDER="codex"
 
 # File patterns to review (Rust + TypeScript monorepo)
 FILE_PATTERNS="*.rs,*.ts,*.tsx,*.js,*.jsx,*.mjs,*.cjs,*.yml,*.yaml,*.json,*.toml,*.sh,*.md"
