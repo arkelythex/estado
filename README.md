@@ -48,6 +48,15 @@ Milestones: `docs/ROADMAP_MILESTONES_v1.md`.
 
 Specs live in `docs/MVP/`.
 
+## Architecture
+
+![CivicTech Peru architecture](docs/diagrams/estado.architecture.light.svg#gh-light-mode-only)
+![CivicTech Peru architecture](docs/diagrams/estado.architecture.dark.svg#gh-dark-mode-only)
+
+Hexagonal core: the Next.js apps talk to the Axum API over the OpenAPI contract; the
+API invokes usecases (ports), which apply domain transitions and are implemented by
+the Postgres adapter, with a separate auth crate for OIDC principals.
+
 ## Repo layout
 - `apps/`: Next.js product apps (`web`, `admin`)
 - `crates/`: Rust core modules (api/domain/usecases/adapters)

@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "CivicTech Peru — Hexagonal Core (v5 scaffold)",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/arkelythex/estado",
+      "provider": "github",
+      "revision": "2b1cc8daef29be632c3f8e8887a037000d28d29c"
+    }
+  },
+  "components": [
+    {
+      "id": "apps",
+      "type": "frontend",
+      "label": "Next.js Apps",
+      "sublabel": "web + admin",
+      "sources": [
+        { "path": "apps/web/app/page.tsx", "label": "public surface" },
+        { "path": "apps/admin/app/page.tsx", "label": "admin surface" }
+      ],
+      "pos": [40, 40],
+      "size": [190, 110]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "API (Axum)",
+      "sublabel": "crates/api",
+      "sources": [
+        { "path": "crates/api/src/main.rs", "line": 13, "label": "async fn main()" }
+      ],
+      "pos": [280, 40],
+      "size": [190, 110]
+    },
+    {
+      "id": "usecases",
+      "type": "backend",
+      "label": "Usecases",
+      "sublabel": "ports (traits)",
+      "sources": [
+        { "path": "crates/usecases/src/lib.rs", "line": 15, "label": "trait ReportRepository" }
+      ],
+      "pos": [520, 40],
+      "size": [190, 110]
+    },
+    {
+      "id": "domain",
+      "type": "backend",
+      "label": "Domain",
+      "sublabel": "entities, transitions",
+      "sources": [
+        { "path": "crates/domain/src/lib.rs", "line": 40, "label": "struct Report" },
+        { "path": "crates/domain/src/lib.rs", "line": 83, "label": "fn transition()" }
+      ],
+      "pos": [760, 40],
+      "size": [190, 110]
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "Auth",
+      "sublabel": "OIDC principal",
+      "sources": [
+        { "path": "crates/auth/src/lib.rs", "line": 109, "label": "struct AuthService" }
+      ],
+      "pos": [280, 220],
+      "size": [190, 100]
+    },
+    {
+      "id": "adapters_pg",
+      "type": "database",
+      "label": "Postgres Adapter",
+      "sublabel": "crates/adapters_pg",
+      "sources": [
+        { "path": "crates/adapters_pg/src/lib.rs", "line": 18, "label": "struct PgStore" }
+      ],
+      "pos": [520, 220],
+      "size": [190, 100]
+    }
+  ],
+  "connections": [
+    { "from": "apps", "to": "api", "label": "OpenAPI contract", "labelAt": [255, 36] },
+    { "from": "api", "to": "usecases", "label": "invokes" },
+    { "from": "usecases", "to": "domain", "label": "transition()", "labelAt": [735, 36] },
+    { "from": "api", "to": "auth", "label": "authenticates", "labelAt": [375, 164] },
+    { "from": "usecases", "to": "adapters_pg", "label": "implements port", "labelAt": [615, 164] }
+  ]
+}
