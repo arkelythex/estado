@@ -1,0 +1,35 @@
+schema: spec-driven
+
+strict_tdd: true
+
+context: |
+  Stack: pnpm workspace (civictech-peru), Rust (cargo), TypeScript.
+  Architecture: Monorepo with apps/web, apps/admin, Rust API backend.
+  Testing: pnpm test (runs per-package), cargo test for Rust, smoke tests.
+  Style: cargo fmt + clippy for Rust, pnpm lint.
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected apps/packages
+  specs:
+    - Use Given/When/Then format for scenarios
+  design:
+    - Document architecture decisions with rationale
+  tasks:
+    - Keep tasks completable in one session
+  apply:
+    - Follow existing code patterns
+  verify:
+    test_command: 'pnpm test && cargo test --workspace --all-features'
+    build_command: 'pnpm build'
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+
+testing:
+  strict_tdd: true
+  detected: '2026-07-30'
+  runner:
+    command: 'pnpm test'
+    framework: 'pnpm workspace (multi-lang)'
