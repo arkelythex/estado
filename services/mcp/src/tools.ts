@@ -5,11 +5,12 @@ import {
 } from "./client.ts";
 
 export interface JsonSchemaProperty {
-  type: "string";
+  type: "string" | "integer";
   description: string;
   enum?: readonly string[];
   format?: string;
   maxLength?: number;
+  minimum?: number;
   default?: string;
 }
 
@@ -256,6 +257,68 @@ export const TOOLS: readonly McpToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "verify_audit_chain",
+    description:
+      "Verify cryptographic SHA-256 audit hash-chain integrity across stored audit events.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "detect_spending_anomalies",
+    description:
+      "Detect deterministic exact-integer fiscal red flags (contract splitting, duplicate disbursements, single-entity concentration) for a municipality.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        municipality_id: MUNICIPALITY_PROP,
+        threshold_cents: {
+          type: "integer",
+          description:
+            "Optional positive procurement threshold in exact integer cents (for example 428000 for S/ 4,280.00).",
+          minimum: 1,
+        },
+      },
+      required: ["municipality_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "export_ocds_releases",
+    description:
+      "Export municipal expenses as a validated Open Contracting Data Standard (OCDS 1.1) JSON release package.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        municipality_id: MUNICIPALITY_PROP,
+      },
+      required: ["municipality_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "track_report_by_receipt",
+    description:
+      "Track an anonymous whistleblower report status and redacted lifecycle timeline using its one-time receipt code.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        municipality_id: MUNICIPALITY_PROP,
+        receipt_code: {
+          type: "string",
+          description:
+            "One-time anonymous whistleblower receipt code (sent via X-Receipt-Code header).",
+          maxLength: 64,
+        },
+      },
+      required: ["municipality_id", "receipt_code"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -350,6 +413,38 @@ function optionalReportStatus(obj: Record<string, unknown>): ReportStatus | unde
     throw new ToolInputError(`status must be one of ${REPORT_STATUSES.join(", ")}`);
   }
   return raw as ReportStatus;
+}
+
+function optionalPositiveSafeInt(
+  obj: Record<string, unknown>,
+  field: string,
+): number | undefined {
+  const val = obj[field];
+  if (val === undefined) {
+    return undefined;
+  }
+  if (typeof val !== "number" || !Number.isSafeInteger(val) || val <= 0) {
+    throw new ToolInputError(`${field} must be a positive safe integer`);
+  }
+  return val;
+}
+
+function requireReceiptCode(obj: Record<string, unknown>, field: string): string {
+  const val = obj[field];
+  if (typeof val !== "string") {
+    throw new ToolInputError(`${field} must be a non-empty string`);
+  }
+  const trimmed = val.trim();
+  if (trimmed.length === 0) {
+    throw new ToolInputError(`${field} must not be blank`);
+  }
+  if (trimmed.length > 64) {
+    throw new ToolInputError(`${field} exceeds maximum length of 64`);
+  }
+  if (/[\r\n\0]/.test(trimmed)) {
+    throw new ToolInputError(`${field} contains invalid characters`);
+  }
+  return trimmed;
 }
 
 function formatJsonResult(payload: unknown): McpToolCallResult {
@@ -501,6 +596,41 @@ export async function callTool(
         const municipalityId = requireNonEmptyString(args, "municipality_id", 64);
         const result = await deps.client.runDemoIngest(municipalityId);
         return formatJsonResult(result);
+      }
+
+      case "verify_audit_chain": {
+        assertAllowedKeys(args, []);
+        const verification = await deps.client.verifyAuditChain();
+        return formatJsonResult(verification);
+      }
+
+      case "detect_spending_anomalies": {
+        assertAllowedKeys(args, ["municipality_id", "threshold_cents"]);
+        const municipalityId = requireNonEmptyString(args, "municipality_id", 64);
+        const thresholdCents = optionalPositiveSafeInt(args, "threshold_cents");
+        const anomalies = await deps.client.detectSpendingAnomalies({
+          municipality_id: municipalityId,
+          threshold_cents: thresholdCents,
+        });
+        return formatJsonResult(anomalies);
+      }
+
+      case "export_ocds_releases": {
+        assertAllowedKeys(args, ["municipality_id"]);
+        const municipalityId = requireNonEmptyString(args, "municipality_id", 64);
+        const pkg = await deps.client.exportOcdsReleases(municipalityId);
+        return formatJsonResult(pkg);
+      }
+
+      case "track_report_by_receipt": {
+        assertAllowedKeys(args, ["municipality_id", "receipt_code"]);
+        const municipalityId = requireNonEmptyString(args, "municipality_id", 64);
+        const receiptCode = requireReceiptCode(args, "receipt_code");
+        const tracking = await deps.client.trackReportByReceipt({
+          municipality_id: municipalityId,
+          receipt_code: receiptCode,
+        });
+        return formatJsonResult(tracking);
       }
 
       default:

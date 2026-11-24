@@ -4,15 +4,20 @@ import {
   buildExpensesQuery,
   computeSha256Hex,
   createReport,
+  fetchAuditVerify,
   fetchDatasets,
   fetchExpenses,
   fetchPublishedReport,
   fetchPublishedReports,
+  fetchSpendingAnomalies,
   formatBigIntCentsPEN,
+  formatBpsPercent,
   formatCentsPEN,
+  getOcdsReleasesUrl,
   requestEvidenceUpload,
   submitReport,
   sumExpenseCents,
+  trackReportByReceipt,
   uploadEvidenceToPresignedUrl,
 } from './api'
 
@@ -82,6 +87,14 @@ describe('formatCentsPEN & exact integer arithmetic', () => {
   test('rejects non-integer inputs', () => {
     expect(() => formatCentsPEN(12.34)).toThrow(RangeError)
     expect(() => formatCentsPEN(Number.NaN)).toThrow(RangeError)
+    expect(() => formatBpsPercent(75.5)).toThrow(RangeError)
+  })
+
+  test('formats basis points with BigInt integer math', () => {
+    expect(formatBpsPercent(0)).toBe('0.00%')
+    expect(formatBpsPercent(7000)).toBe('70.00%')
+    expect(formatBpsPercent(8425)).toBe('84.25%')
+    expect(formatBpsPercent(10000)).toBe('100.00%')
   })
 
   test('sums expense cents exactly with BigInt', () => {
@@ -408,5 +421,185 @@ describe('API client URL construction, parsing, and error handling', () => {
         expect(err.message).not.toContain('99999999')
       }
     }
+  })
+
+  test('createReport decodes optional one-time receipt_code when present and rejects non-string', async () => {
+    mockFetchOnce(() =>
+      Response.json(
+        {
+          id: 'rep-10',
+          municipality_id: 'lima',
+          status: 'DRAFT',
+          category: 'Transparencia',
+          description: 'Reporte con recibo',
+          created_at: '2026-06-20T10:00:00Z',
+          receipt_code: 'ABCD-EFGH-IJKL-MNOP',
+        },
+        { status: 201 },
+      ),
+    )
+
+    const created = await createReport(
+      {
+        municipality_id: 'lima',
+        category: 'Transparencia',
+        description: 'Reporte con recibo',
+      },
+      baseUrl,
+    )
+    expect(created.receipt_code).toBe('ABCD-EFGH-IJKL-MNOP')
+
+    mockFetchOnce(() =>
+      Response.json(
+        {
+          id: 'rep-11',
+          municipality_id: 'lima',
+          status: 'DRAFT',
+          category: 'Transparencia',
+          description: 'Sin recibo',
+          created_at: '2026-06-20T10:00:00Z',
+          receipt_code: 12345,
+        },
+        { status: 201 },
+      ),
+    )
+
+    await expect(
+      createReport(
+        {
+          municipality_id: 'lima',
+          category: 'Transparencia',
+          description: 'Sin recibo',
+        },
+        baseUrl,
+      ),
+    ).rejects.toThrow(ApiError)
+  })
+
+  test('fetchAuditVerify calls /public/audit/verify and validates ChainVerification fields', async () => {
+    const requests = mockFetchOnce(() =>
+      Response.json({
+        valid: true,
+        checked_events: 14,
+        head_hash: 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+        broken_at_seq: null,
+        reason: null,
+      }),
+    )
+
+    const result = await fetchAuditVerify(baseUrl)
+    expect(requests[0]?.url).toBe('http://localhost:8080/public/audit/verify')
+    expect(result.valid).toBe(true)
+    expect(result.checked_events).toBe(14)
+    expect(result.head_hash.startsWith('abcdef123456')).toBe(true)
+    expect(result.broken_at_seq).toBeNull()
+
+    mockFetchOnce(() =>
+      Response.json({
+        valid: true,
+        checked_events: -2,
+        head_hash: 'abc',
+        broken_at_seq: null,
+        reason: null,
+      }),
+    )
+    await expect(fetchAuditVerify(baseUrl)).rejects.toThrow(ApiError)
+  })
+
+  test('fetchSpendingAnomalies validates safe integers and optional threshold_cents', async () => {
+    const requests = mockFetchOnce(() =>
+      Response.json({
+        total_expenses: 5,
+        total_amount_cents: 500000,
+        threshold_cents: 200000,
+        flag_count: 1,
+        flags: [
+          {
+            rule_code: 'CONTRACT_SPLITTING',
+            severity: 'HIGH',
+            entity: 'Proveedora Sur SAC',
+            category: 'Obras',
+            total_cents: 240000,
+            expense_count: 3,
+            affected_ids: ['e1', 'e2', 'e3'],
+            share_bps: 4800,
+            summary: 'Posible fraccionamiento debajo del umbral.',
+          },
+        ],
+      }),
+    )
+
+    const res = await fetchSpendingAnomalies(' arequipa ', 200000, baseUrl)
+    expect(requests[0]?.url).toBe(
+      'http://localhost:8080/public/anomalies?municipality_id=arequipa&threshold_cents=200000',
+    )
+    expect(res.flag_count).toBe(1)
+    expect(res.flags[0]?.rule_code).toBe('CONTRACT_SPLITTING')
+    expect(res.flags[0]?.total_cents).toBe(240000)
+    expect(res.flags[0]?.share_bps).toBe(4800)
+
+    await expect(
+      fetchSpendingAnomalies('lima', 12.5, baseUrl),
+    ).rejects.toThrow(ApiError)
+
+    mockFetchOnce(() =>
+      Response.json({
+        total_expenses: 1,
+        total_amount_cents: 100.5,
+        threshold_cents: 200000,
+        flag_count: 0,
+        flags: [],
+      }),
+    )
+    await expect(fetchSpendingAnomalies('lima', undefined, baseUrl)).rejects.toThrow(
+      ApiError,
+    )
+  })
+
+  test('trackReportByReceipt sends X-Receipt-Code header and never puts code in URL query', async () => {
+    const requests = mockFetchOnce(() =>
+      Response.json({
+        municipality_id: 'cusco',
+        status: 'TRIAGED',
+        category: 'Contrataciones',
+        created_at: '2026-06-18T08:30:00Z',
+        timeline: [
+          {
+            from_status: 'DRAFT',
+            to_status: 'SUBMITTED',
+            action: 'SUBMIT',
+            occurred_at: '2026-06-18T08:35:00Z',
+          },
+          {
+            from_status: 'SUBMITTED',
+            to_status: 'TRIAGED',
+            action: 'TRIAGE',
+            occurred_at: '2026-06-19T11:00:00Z',
+          },
+        ],
+      }),
+    )
+
+    const receipt = 'WXYZ-1234-ABCD-5678'
+    const tracking = await trackReportByReceipt('cusco', ` ${receipt} `, baseUrl)
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.url).toBe(
+      'http://localhost:8080/public/reports/track?municipality_id=cusco',
+    )
+    expect(requests[0]?.url).not.toContain(receipt)
+    expect(requests[0]?.headers).toEqual({
+      'X-Receipt-Code': receipt,
+    })
+    expect(tracking.status).toBe('TRIAGED')
+    expect(tracking.timeline).toHaveLength(2)
+
+    await expect(trackReportByReceipt('cusco', '   ', baseUrl)).rejects.toThrow(ApiError)
+  })
+
+  test('getOcdsReleasesUrl builds normalized OCDS 1.1 release package URL', () => {
+    expect(getOcdsReleasesUrl(' Trujillo ', baseUrl)).toBe(
+      'http://localhost:8080/public/ocds/releases.json?municipality_id=trujillo',
+    )
   })
 })

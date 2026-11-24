@@ -15,11 +15,15 @@ Self-contained Model Context Protocol (JSON-RPC 2.0 over stdio) server running o
 | `query_expenses` | Public | Filter municipal expenses (`entity`, `category`, `from`, `to`) returning exact integer `amount_cents` and decimal `amount`. |
 | `list_public_reports` | Public | List PII-redacted published citizen reports for a `municipality_id`. |
 | `get_public_report` | Public | Get a published citizen report detail including `evidence_count`. |
-| `create_report` | Citizen | Create a `DRAFT` report; supports optional `idempotency_key` (`Idempotency-Key` header). |
+| `create_report` | Citizen | Create a `DRAFT` report; supports optional `idempotency_key` (`Idempotency-Key` header) and returns a one-time `receipt_code` when issued. |
 | `submit_report` | Citizen | Transition a report from `DRAFT` to `SUBMITTED`. |
 | `list_moderation_cases` | Moderator/Admin | List moderation cases (`municipality_id`, optional `status`). |
 | `moderate_case` | Moderator/Admin | Execute `TRIAGE`, `VERIFY`, `REJECT`, or `PUBLISH` with mandatory `reason` (`PUBLISH` also requires redacted `public_text`). |
 | `run_demo_ingest` | Admin | Trigger idempotent CSV demo ingestion for a `municipality_id`. |
+| `verify_audit_chain` | Public | Verify cryptographic SHA-256 audit hash-chain integrity (`GET /public/audit/verify`). |
+| `detect_spending_anomalies` | Public | Detect exact-integer fiscal red flags (`CONTRACT_SPLITTING`, `DUPLICATE_DISBURSEMENT`, `HIGH_ENTITY_CONCENTRATION`) for a `municipality_id` with optional positive safe integer `threshold_cents`. |
+| `export_ocds_releases` | Public | Export municipal expenses as a validated OCDS 1.1 JSON release package for a `municipality_id`. |
+| `track_report_by_receipt` | Citizen | Track an anonymous whistleblower report status and redacted timeline (`municipality_id`, `receipt_code` sent via `X-Receipt-Code` header). |
 
 ## Running Locally
 

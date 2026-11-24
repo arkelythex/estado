@@ -38,6 +38,99 @@ export interface Report {
   category: string;
   description: string;
   created_at: string;
+  receipt_code?: string;
+}
+
+export interface AuditChainVerification {
+  valid: boolean;
+  checked_events: number;
+  head_hash: string;
+  broken_at_seq: number | null;
+  reason: string | null;
+}
+
+export interface FiscalRedFlag {
+  rule_code: string;
+  severity: string;
+  entity: string;
+  category: string | null;
+  total_cents: number;
+  expense_count: number;
+  affected_ids: string[];
+  share_bps: number | null;
+  summary: string;
+}
+
+export interface SpendingAnomaliesResponse {
+  total_expenses: number;
+  total_amount_cents: number;
+  threshold_cents: number;
+  flag_count: number;
+  flags: FiscalRedFlag[];
+}
+
+export interface OcdsValue {
+  amount: number;
+  currency: string;
+}
+
+export interface OcdsParty {
+  name: string;
+}
+
+export interface OcdsTender {
+  id: string;
+  title: string;
+  status: string;
+  value: OcdsValue;
+}
+
+export interface OcdsAward {
+  id: string;
+  status: string;
+  value: OcdsValue;
+}
+
+export interface OcdsContract {
+  id: string;
+  awardID: string;
+  status: string;
+  value: OcdsValue;
+}
+
+export interface OcdsRelease {
+  ocid: string;
+  id: string;
+  date: string;
+  tag: string[];
+  initiationType: string;
+  buyer: OcdsParty;
+  tender: OcdsTender;
+  awards: OcdsAward[];
+  contracts: OcdsContract[];
+}
+
+export interface OcdsReleasePackage {
+  version: "1.1";
+  uri?: string;
+  publishedDate: string;
+  publisher: OcdsParty;
+  releases: OcdsRelease[];
+}
+
+export interface ReportTrackingEvent {
+  from_status: string;
+  to_status: string;
+  action: string;
+  occurred_at: string;
+}
+
+export interface ReportTracking {
+  status: string;
+  category: string;
+  municipality_id: string;
+  created_at: string;
+  timeline: ReportTrackingEvent[];
 }
 
 export interface ModerationCase {
@@ -103,6 +196,16 @@ export interface ModerateCaseParams {
   action: ModerationAction;
   reason: string;
   public_text?: string | undefined;
+}
+
+export interface DetectSpendingAnomaliesParams {
+  municipality_id: string;
+  threshold_cents?: number | undefined;
+}
+
+export interface TrackReportByReceiptParams {
+  municipality_id: string;
+  receipt_code: string;
 }
 
 export interface CivicTechApiErrorDetails {
@@ -236,6 +339,22 @@ function isBoolean(value: unknown): value is boolean {
   return typeof value === "boolean";
 }
 
+function isSafeInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function isSafeNonNegativeInt(value: unknown): value is number {
+  return isSafeInt(value) && value >= 0;
+}
+
+function isSafePositiveInt(value: unknown): value is number {
+  return isSafeInt(value) && value > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isString);
+}
+
 function decodeDataset(value: unknown): Dataset | null {
   if (!isRecord(value)) return null;
   if (
@@ -337,13 +456,256 @@ function decodeReport(value: unknown): Report | null {
   ) {
     return null;
   }
-  return {
+  if (value.receipt_code !== undefined && !isString(value.receipt_code)) {
+    return null;
+  }
+  const report: Report = {
     id: value.id,
     municipality_id: value.municipality_id,
     status: value.status,
     category: value.category,
     description: value.description,
     created_at: value.created_at,
+  };
+  if (isString(value.receipt_code) && value.receipt_code.length > 0) {
+    report.receipt_code = value.receipt_code;
+  }
+  return report;
+}
+
+function decodeAuditChainVerification(value: unknown): AuditChainVerification | null {
+  if (!isRecord(value)) return null;
+  if (
+    !isBoolean(value.valid) ||
+    !isSafeNonNegativeInt(value.checked_events) ||
+    !isString(value.head_hash) ||
+    !(value.broken_at_seq === null || isSafeInt(value.broken_at_seq)) ||
+    !isNullableString(value.reason)
+  ) {
+    return null;
+  }
+  return {
+    valid: value.valid,
+    checked_events: value.checked_events,
+    head_hash: value.head_hash,
+    broken_at_seq: value.broken_at_seq,
+    reason: value.reason,
+  };
+}
+
+function decodeFiscalRedFlag(value: unknown): FiscalRedFlag | null {
+  if (!isRecord(value)) return null;
+  if (
+    !isString(value.rule_code) ||
+    !isString(value.severity) ||
+    !isString(value.entity) ||
+    !isNullableString(value.category) ||
+    !isSafeInt(value.total_cents) ||
+    !isSafeNonNegativeInt(value.expense_count) ||
+    !isStringArray(value.affected_ids) ||
+    !(value.share_bps === null || isSafeInt(value.share_bps)) ||
+    !isString(value.summary)
+  ) {
+    return null;
+  }
+  return {
+    rule_code: value.rule_code,
+    severity: value.severity,
+    entity: value.entity,
+    category: value.category,
+    total_cents: value.total_cents,
+    expense_count: value.expense_count,
+    affected_ids: [...value.affected_ids],
+    share_bps: value.share_bps,
+    summary: value.summary,
+  };
+}
+
+function decodeSpendingAnomaliesResponse(value: unknown): SpendingAnomaliesResponse | null {
+  if (!isRecord(value)) return null;
+  if (
+    !isSafeNonNegativeInt(value.total_expenses) ||
+    !isSafeNonNegativeInt(value.total_amount_cents) ||
+    !isSafePositiveInt(value.threshold_cents) ||
+    !isSafeNonNegativeInt(value.flag_count)
+  ) {
+    return null;
+  }
+  const flags = decodeArray(decodeFiscalRedFlag)(value.flags);
+  if (flags === null) {
+    return null;
+  }
+  return {
+    total_expenses: value.total_expenses,
+    total_amount_cents: value.total_amount_cents,
+    threshold_cents: value.threshold_cents,
+    flag_count: value.flag_count,
+    flags,
+  };
+}
+
+function decodeOcdsParty(value: unknown): OcdsParty | null {
+  if (!isRecord(value) || !isString(value.name)) {
+    return null;
+  }
+  return { name: value.name };
+}
+
+function decodeOcdsValue(value: unknown): OcdsValue | null {
+  if (!isRecord(value) || !isNumber(value.amount) || !isString(value.currency)) {
+    return null;
+  }
+  return {
+    amount: value.amount,
+    currency: value.currency,
+  };
+}
+
+function decodeOcdsTender(value: unknown): OcdsTender | null {
+  if (
+    !isRecord(value) ||
+    !isString(value.id) ||
+    !isString(value.title) ||
+    !isString(value.status)
+  ) {
+    return null;
+  }
+  const val = decodeOcdsValue(value.value);
+  if (val === null) return null;
+  return {
+    id: value.id,
+    title: value.title,
+    status: value.status,
+    value: val,
+  };
+}
+
+function decodeOcdsAward(value: unknown): OcdsAward | null {
+  if (!isRecord(value) || !isString(value.id) || !isString(value.status)) {
+    return null;
+  }
+  const val = decodeOcdsValue(value.value);
+  if (val === null) return null;
+  return {
+    id: value.id,
+    status: value.status,
+    value: val,
+  };
+}
+
+function decodeOcdsContract(value: unknown): OcdsContract | null {
+  if (
+    !isRecord(value) ||
+    !isString(value.id) ||
+    !isString(value.awardID) ||
+    !isString(value.status)
+  ) {
+    return null;
+  }
+  const val = decodeOcdsValue(value.value);
+  if (val === null) return null;
+  return {
+    id: value.id,
+    awardID: value.awardID,
+    status: value.status,
+    value: val,
+  };
+}
+
+function decodeOcdsRelease(value: unknown): OcdsRelease | null {
+  if (!isRecord(value)) return null;
+  if (
+    !isString(value.ocid) ||
+    !isString(value.id) ||
+    !isString(value.date) ||
+    !isStringArray(value.tag) ||
+    !isString(value.initiationType)
+  ) {
+    return null;
+  }
+  const buyer = decodeOcdsParty(value.buyer);
+  const tender = decodeOcdsTender(value.tender);
+  const awards = decodeArray(decodeOcdsAward)(value.awards);
+  const contracts = decodeArray(decodeOcdsContract)(value.contracts);
+  if (buyer === null || tender === null || awards === null || contracts === null) {
+    return null;
+  }
+  return {
+    ocid: value.ocid,
+    id: value.id,
+    date: value.date,
+    tag: [...value.tag],
+    initiationType: value.initiationType,
+    buyer,
+    tender,
+    awards,
+    contracts,
+  };
+}
+
+function decodeOcdsReleasePackage(value: unknown): OcdsReleasePackage | null {
+  if (!isRecord(value)) return null;
+  if (value.version !== "1.1" || !isString(value.publishedDate)) {
+    return null;
+  }
+  if (value.uri !== undefined && !isString(value.uri)) {
+    return null;
+  }
+  const publisher = decodeOcdsParty(value.publisher);
+  const releases = decodeArray(decodeOcdsRelease)(value.releases);
+  if (publisher === null || releases === null) {
+    return null;
+  }
+  const pkg: OcdsReleasePackage = {
+    version: "1.1",
+    publishedDate: value.publishedDate,
+    publisher,
+    releases,
+  };
+  if (isString(value.uri)) {
+    pkg.uri = value.uri;
+  }
+  return pkg;
+}
+
+function decodeReportTrackingEvent(value: unknown): ReportTrackingEvent | null {
+  if (!isRecord(value)) return null;
+  if (
+    !isString(value.from_status) ||
+    !isString(value.to_status) ||
+    !isString(value.action) ||
+    !isString(value.occurred_at)
+  ) {
+    return null;
+  }
+  return {
+    from_status: value.from_status,
+    to_status: value.to_status,
+    action: value.action,
+    occurred_at: value.occurred_at,
+  };
+}
+
+function decodeReportTracking(value: unknown): ReportTracking | null {
+  if (!isRecord(value)) return null;
+  if (
+    !isString(value.status) ||
+    !isString(value.category) ||
+    !isString(value.municipality_id) ||
+    !isString(value.created_at)
+  ) {
+    return null;
+  }
+  const timeline = decodeArray(decodeReportTrackingEvent)(value.timeline);
+  if (timeline === null) {
+    return null;
+  }
+  return {
+    status: value.status,
+    category: value.category,
+    municipality_id: value.municipality_id,
+    created_at: value.created_at,
+    timeline,
   };
 }
 
@@ -651,12 +1013,75 @@ export class CivicTechClient {
     );
   }
 
+  async verifyAuditChain(): Promise<AuditChainVerification> {
+    return this.request(
+      "GET",
+      "/public/audit/verify",
+      { requiresAuth: false },
+      decodeAuditChainVerification,
+    );
+  }
+
+  async detectSpendingAnomalies(
+    params: DetectSpendingAnomaliesParams,
+  ): Promise<SpendingAnomaliesResponse> {
+    const query = new URLSearchParams({ municipality_id: params.municipality_id });
+    if (params.threshold_cents !== undefined) {
+      if (!Number.isSafeInteger(params.threshold_cents) || params.threshold_cents <= 0) {
+        throw new CivicTechApiError("threshold_cents must be a positive safe integer", {
+          status: 400,
+          code: "VALIDATION_ERROR",
+          retryable: false,
+        });
+      }
+      query.set("threshold_cents", String(params.threshold_cents));
+    }
+    return this.request(
+      "GET",
+      `/public/anomalies?${query.toString()}`,
+      { requiresAuth: false },
+      decodeSpendingAnomaliesResponse,
+    );
+  }
+
+  async exportOcdsReleases(municipalityId: string): Promise<OcdsReleasePackage> {
+    const query = new URLSearchParams({ municipality_id: municipalityId });
+    return this.request(
+      "GET",
+      `/public/ocds/releases.json?${query.toString()}`,
+      { requiresAuth: false },
+      decodeOcdsReleasePackage,
+    );
+  }
+
+  async trackReportByReceipt(params: TrackReportByReceiptParams): Promise<ReportTracking> {
+    const trimmedReceipt = params.receipt_code.trim();
+    if (trimmedReceipt.length === 0 || trimmedReceipt.length > 64 || /[\r\n\0]/.test(trimmedReceipt)) {
+      throw new CivicTechApiError("Invalid receipt_code format", {
+        status: 400,
+        code: "VALIDATION_ERROR",
+        retryable: false,
+      });
+    }
+    const query = new URLSearchParams({ municipality_id: params.municipality_id });
+    return this.request(
+      "GET",
+      `/public/reports/track?${query.toString()}`,
+      {
+        requiresAuth: false,
+        receiptCode: trimmedReceipt,
+      },
+      decodeReportTracking,
+    );
+  }
+
   private async request<T>(
     method: "GET" | "POST",
     pathAndQuery: string,
     options: {
       requiresAuth: boolean;
       idempotencyKey?: string | undefined;
+      receiptCode?: string | undefined;
       body?: unknown;
     },
     decode: (value: unknown) => T | null,
@@ -670,6 +1095,9 @@ export class CivicTechClient {
     }
     if (options.idempotencyKey !== undefined && options.idempotencyKey !== "") {
       headers["Idempotency-Key"] = options.idempotencyKey;
+    }
+    if (options.receiptCode !== undefined && options.receiptCode !== "") {
+      headers["X-Receipt-Code"] = options.receiptCode;
     }
 
     const init: RequestInit = {

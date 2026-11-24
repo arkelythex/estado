@@ -1,11 +1,30 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { ApiError, fetchDatasets, type Dataset } from '../lib/api'
+import {
+  ApiError,
+  fetchAuditVerify,
+  fetchDatasets,
+  fetchSpendingAnomalies,
+  formatBpsPercent,
+  formatCentsPEN,
+  getOcdsReleasesUrl,
+  type AuditVerification,
+  type Dataset,
+  type SpendingAnomaliesResponse,
+} from '../lib/api'
 import { getMunicipalityLabel } from '../lib/municipalities'
 
 interface IndexLoaderData {
   municipalityId: string
   datasets: Dataset[]
   errorMessage: string | null
+  auditVerification: AuditVerification | null
+  auditError: string | null
+  anomalies: SpendingAnomaliesResponse | null
+  anomaliesError: string | null
+}
+
+function getSafeErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback
 }
 
 export const Route = createFileRoute('/')({
@@ -13,32 +32,56 @@ export const Route = createFileRoute('/')({
     municipality_id: search.municipality_id,
   }),
   loader: async ({ deps }): Promise<IndexLoaderData> => {
-    try {
-      const datasets = await fetchDatasets(deps.municipality_id)
-      return {
-        municipalityId: deps.municipality_id,
-        datasets,
-        errorMessage: null,
-      }
-    } catch (err: unknown) {
-      const message =
-        err instanceof ApiError
-          ? err.message
-          : 'No se pudo conectar con la API de transparencia.'
-      return {
-        municipalityId: deps.municipality_id,
-        datasets: [],
-        errorMessage: message,
-      }
+    const [datasetsResult, auditResult, anomaliesResult] = await Promise.allSettled([
+      fetchDatasets(deps.municipality_id),
+      fetchAuditVerify(),
+      fetchSpendingAnomalies(deps.municipality_id),
+    ])
+
+    return {
+      municipalityId: deps.municipality_id,
+      datasets: datasetsResult.status === 'fulfilled' ? datasetsResult.value : [],
+      errorMessage:
+        datasetsResult.status === 'rejected'
+          ? getSafeErrorMessage(
+              datasetsResult.reason,
+              'No se pudo conectar con la API de transparencia.',
+            )
+          : null,
+      auditVerification: auditResult.status === 'fulfilled' ? auditResult.value : null,
+      auditError:
+        auditResult.status === 'rejected'
+          ? getSafeErrorMessage(
+              auditResult.reason,
+              'No se pudo verificar la cadena criptográfica de auditoría.',
+            )
+          : null,
+      anomalies: anomaliesResult.status === 'fulfilled' ? anomaliesResult.value : null,
+      anomaliesError:
+        anomaliesResult.status === 'rejected'
+          ? getSafeErrorMessage(
+              anomaliesResult.reason,
+              'No se pudo ejecutar el análisis de alertas fiscales.',
+            )
+          : null,
     }
   },
   component: HomePage,
 })
 
 function HomePage() {
-  const { municipalityId, datasets, errorMessage } = Route.useLoaderData()
+  const {
+    municipalityId,
+    datasets,
+    errorMessage,
+    auditVerification,
+    auditError,
+    anomalies,
+    anomaliesError,
+  } = Route.useLoaderData()
   const muniLabel = getMunicipalityLabel(municipalityId)
   const totalVersions = datasets.reduce((sum, ds) => sum + ds.versions, 0)
+  const ocdsUrl = getOcdsReleasesUrl(municipalityId)
 
   const activeBars = Math.min(4, Math.max(datasets.length > 0 ? 1 : 0, datasets.length))
   const versionBars = Math.min(4, Math.max(totalVersions > 0 ? 1 : 0, Math.ceil(totalVersions / 2)))
@@ -165,9 +208,37 @@ function HomePage() {
 
       <section className="dashboard-split">
         <article className="card" style={{ marginBottom: 0 }}>
-          <div className="card-header-row">
+          <div className="card-header-row" style={{ flexWrap: 'wrap' }}>
             <h2 className="section-label">AUDIT TIMELINE</h2>
-            <span className="stat-pill stat-pill-emerald">ACTIVO</span>
+            {auditVerification ? (
+              auditVerification.valid ? (
+                <span
+                  className="stat-pill stat-pill-emerald mono"
+                  data-testid="audit-chain-status"
+                >
+                  VERIFIED CHAIN · {auditVerification.checked_events} eventos ·{' '}
+                  {auditVerification.head_hash.slice(0, 12)}
+                </span>
+              ) : (
+                <span
+                  className="badge badge-danger"
+                  data-testid="audit-chain-status"
+                >
+                  CHAIN INVALID · {auditVerification.checked_events} eventos
+                  {auditVerification.broken_at_seq !== null
+                    ? ` · seq ${auditVerification.broken_at_seq}`
+                    : ''}
+                </span>
+              )
+            ) : (
+              <span
+                className="badge badge-warning"
+                data-testid="audit-chain-status"
+                title={auditError ?? undefined}
+              >
+                VERIFICACIÓN NO DISPONIBLE
+              </span>
+            )}
           </div>
 
           <div className="timeline-list">
@@ -277,6 +348,99 @@ function HomePage() {
             </div>
           )}
         </article>
+      </section>
+
+      <section className="card" data-testid="anomalies-panel">
+        <div className="card-header-row" style={{ flexWrap: 'wrap' }}>
+          <div>
+            <h2 className="section-label">ALERTAS FISCALES (RED FLAGS)</h2>
+            <p className="field-hint" style={{ margin: '0.25rem 0 0' }}>
+              Detección determinística en Rust (fraccionamiento, duplicados y concentración)
+            </p>
+          </div>
+          <div className="actions-row">
+            {anomalies ? (
+              <span
+                className={`badge ${anomalies.flag_count > 0 ? 'badge-warning' : 'badge-success'}`}
+              >
+                {anomalies.flag_count}{' '}
+                {anomalies.flag_count === 1 ? 'alerta' : 'alertas'}
+              </span>
+            ) : null}
+            <a
+              href={ocdsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="btn btn-accent"
+              data-testid="ocds-export-link"
+            >
+              Exportar OCDS 1.1 JSON
+            </a>
+          </div>
+        </div>
+
+        {anomaliesError ? (
+          <div className="alert alert-error" role="alert" style={{ marginBottom: 0 }}>
+            <strong>Error en análisis fiscal:</strong> {anomaliesError}
+          </div>
+        ) : anomalies ? (
+          <>
+            <div className="field-hint">
+              Analizados: <strong>{anomalies.total_expenses}</strong> egresos · Total:{' '}
+              <span className="mono">{formatCentsPEN(anomalies.total_amount_cents)}</span> ·
+              Umbral splitting:{' '}
+              <span className="mono">{formatCentsPEN(anomalies.threshold_cents)}</span>
+            </div>
+
+            {anomalies.flags.length === 0 ? (
+              <div className="empty-state" style={{ paddingBottom: '1rem' }}>
+                No se detectaron alertas fiscales para {muniLabel} con el umbral vigente.
+              </div>
+            ) : (
+              <div className="anomaly-list">
+                {anomalies.flags.map((flag, idx) => (
+                  <article
+                    key={`${flag.rule_code}-${flag.entity}-${idx}`}
+                    className="anomaly-item"
+                  >
+                    <div className="anomaly-item-top">
+                      <div className="actions-row">
+                        <span className="badge badge-warning">{flag.rule_code}</span>
+                        <span
+                          className={`badge ${
+                            flag.severity.toUpperCase() === 'HIGH'
+                              ? 'badge-danger'
+                              : 'badge-neutral'
+                          }`}
+                        >
+                          {flag.severity}
+                        </span>
+                      </div>
+                      <span className="amount-cell">
+                        {formatCentsPEN(flag.total_cents)}
+                      </span>
+                    </div>
+
+                    <div className="anomaly-meta">
+                      <span>
+                        Entidad: <strong style={{ color: 'var(--text-strong)' }}>{flag.entity}</strong>
+                      </span>
+                      {flag.category ? <span>Categoría: {flag.category}</span> : null}
+                      <span>Egresos: {flag.expense_count}</span>
+                      {flag.share_bps !== null ? (
+                        <span className="mono">
+                          Participación: {formatBpsPercent(flag.share_bps)}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <p className="anomaly-summary">{flag.summary}</p>
+                  </article>
+                ))}
+              </div>
+            )}
+          </>
+        ) : null}
       </section>
 
       <section className="grid-2" aria-label="Acciones rápidas">

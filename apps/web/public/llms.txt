@@ -1,14 +1,15 @@
 # CivicTech Perú — AI-Agent & Citizen Transparency Guide
 
 ## Portal Web (`apps/web`)
-- `/` — Dashboard de transparencia municipal (KPIs: `kpi-datasets`, `kpi-versions`, `kpi-integrity`; tarjetas `dataset-card`).
-- `/expenses` — Explorador de gastos públicos en Soles (PEN) con filtros (`entity`, `category`, `from`, `to`), total exacto (`expenses-total`), tabla (`expenses-table`) y filas (`expense-row`).
+- `/` — Dashboard de transparencia municipal (KPIs: `kpi-datasets`, `kpi-versions`, `kpi-integrity`; tarjetas `dataset-card`; insignia criptográfica de cadena de auditoría `audit-chain-status` dentro de `AUDIT TIMELINE`; panel de alertas fiscales `anomalies-panel` con enlace de exportación `ocds-export-link`).
+- `/expenses` — Explorador de gastos públicos en Soles (PEN) con filtros (`entity`, `category`, `from`, `to`), total exacto (`expenses-total`), tabla (`expenses-table`), filas (`expense-row`) y exportación OCDS (`expenses-ocds-link`).
 - `/report` — Flujo ciudadano en pasos (`report-step` con `data-step="1|2|3|4"`):
   1. Borrador anónimo (`report-category`, `report-description`, `report-create-btn`).
   2. Evidencia opcional con SHA-256 calculado localmente en navegador (`report-continue-btn`).
   3. Confirmación y envío (`report-submit-btn`).
+  4. Confirmación con código de recibo anónimo único (`report-receipt-code`, mostrado una sola vez y no recuperable).
   - Alertas accesibles en `report-status-alert` (`aria-live="polite"`).
-- `/reports` — Listado público de reportes verificados y publicados (`public-report-card`).
+- `/reports` — Seguimiento anónimo por recibo (`receipt-tracker-form`, `receipt-code-input`, `receipt-track-btn`, `receipt-track-result` con `aria-live="polite"`) y listado público de reportes verificados y publicados (`public-report-card`).
 - `/reports/$id` — Expediente público redactado (`public-report-detail`, `public-evidence-count`).
 
 ### Municipality Scoping & Global Controls
@@ -30,7 +31,7 @@
 - API LLM guide: `GET /llms.txt`
 - Agent capability manifest: `GET /.well-known/agent.json`
 - Health & metrics: `GET /health`, `GET /metrics`
-- Public endpoints: `GET /public/datasets`, `GET /public/expenses`, `GET /public/reports`, `GET /public/reports/{id}`
+- Public endpoints: `GET /public/datasets`, `GET /public/expenses`, `GET /public/reports`, `GET /public/reports/{id}`, `GET /public/audit/verify`, `GET /public/reports/track` (requires `X-Receipt-Code` header, never in URL query), `GET /public/ocds/releases.json`, `GET /public/anomalies`
 - Citizen report lifecycle: `POST /reports` (supports `Idempotency-Key`), `POST /reports/{id}/evidence`, `POST /reports/{id}/submit`
 - Moderation & admin (Bearer auth): `GET /moderation/cases`, `POST /moderation/cases/{id}/{triage|verify|reject}`, `POST /moderation/reports/{id}/publish`, `POST /admin/ingest/demo`
 

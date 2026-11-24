@@ -93,7 +93,7 @@ describe("MCP handshake and discovery", () => {
     expect(res).toBeNull();
   });
 
-  test("tools/list returns all 9 tools with valid JSON schemas", async () => {
+  test("tools/list returns all 13 tools with valid JSON schemas", async () => {
     const { fetchFn } = createMockFetch(() => jsonResponse({}));
     const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
 
@@ -108,7 +108,7 @@ describe("MCP handshake and discovery", () => {
 
     expect(res?.error).toBeUndefined();
     const result = res?.result as { tools: typeof TOOLS };
-    expect(result.tools).toHaveLength(9);
+    expect(result.tools).toHaveLength(13);
 
     const names = result.tools.map((t) => t.name);
     expect(names).toEqual([
@@ -121,6 +121,10 @@ describe("MCP handshake and discovery", () => {
       "list_moderation_cases",
       "moderate_case",
       "run_demo_ingest",
+      "verify_audit_chain",
+      "detect_spending_anomalies",
+      "export_ocds_releases",
+      "track_report_by_receipt",
     ]);
 
     for (const tool of result.tools) {
@@ -128,7 +132,11 @@ describe("MCP handshake and discovery", () => {
       expect(tool.inputSchema.type).toBe("object");
       expect(tool.inputSchema.additionalProperties).toBe(false);
       expect(Array.isArray(tool.inputSchema.required)).toBe(true);
-      expect(tool.inputSchema.required).toContain("municipality_id");
+      if (tool.name === "verify_audit_chain") {
+        expect(tool.inputSchema.required).toEqual([]);
+      } else {
+        expect(tool.inputSchema.required).toContain("municipality_id");
+      }
     }
   });
 });
@@ -296,6 +304,42 @@ describe("Citizen report tools", () => {
       category: "sobrecosto",
       description: "Compra con precio elevado",
     });
+  });
+
+  test("create_report preserves optional receipt_code when present and strips undeclared fields", async () => {
+    const { fetchFn } = createMockFetch(() =>
+      jsonResponse(
+        {
+          id: REPORT_ID,
+          municipality_id: "lima",
+          status: "DRAFT",
+          category: "sobrecosto",
+          description: "Compra con precio elevado",
+          created_at: "2026-06-01T12:00:00Z",
+          receipt_code: "ABCD-EFGH-IJKL-MNOP",
+          receipt_hash: "deadbeef",
+        },
+        201,
+      ),
+    );
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    const out = await callTool(
+      "create_report",
+      {
+        municipality_id: "lima",
+        category: "sobrecosto",
+        description: "Compra con precio elevado",
+      },
+      { client },
+    );
+
+    expect(out.isError).toBeUndefined();
+    const text = out.content[0]?.text ?? "{}";
+    expect(text).not.toContain("receipt_hash");
+    expect(text).not.toContain("deadbeef");
+    const parsed = JSON.parse(text) as { receipt_code?: string };
+    expect(parsed.receipt_code).toBe("ABCD-EFGH-IJKL-MNOP");
   });
 
   test("submit_report calls POST /reports/{id}/submit", async () => {
@@ -760,5 +804,349 @@ describe("Error handling and sanitization", () => {
     expect(first.result?.serverInfo?.name).toBe("@civictech/mcp");
     expect(second.id).toBe(2);
     expect(second.result?.content?.[0]?.text).toBe("[]");
+  });
+});
+
+describe("World-class CivicTech tools", () => {
+  test("verify_audit_chain calls GET /public/audit/verify and projects exact DTO", async () => {
+    const { fetchFn, requests } = createMockFetch(() =>
+      jsonResponse({
+        valid: false,
+        checked_events: 4,
+        head_hash: "a".repeat(64),
+        broken_at_seq: 3,
+        reason: "hash mismatch at seq 3",
+        internal_debug: "should-be-stripped",
+      }),
+    );
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    const out = await callTool("verify_audit_chain", {}, { client });
+    expect(out.isError).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.url).toBe("http://localhost:8080/public/audit/verify");
+
+    const text = out.content[0]?.text ?? "{}";
+    expect(text).not.toContain("internal_debug");
+    expect(text).not.toContain("should-be-stripped");
+    expect(JSON.parse(text)).toEqual({
+      valid: false,
+      checked_events: 4,
+      head_hash: "a".repeat(64),
+      broken_at_seq: 3,
+      reason: "hash mismatch at seq 3",
+    });
+  });
+
+  test("verify_audit_chain rejects unexpected args and unsafe integers", async () => {
+    const { fetchFn, requests } = createMockFetch(() =>
+      jsonResponse({
+        valid: true,
+        checked_events: Number.MAX_SAFE_INTEGER + 2,
+        head_hash: "0".repeat(64),
+        broken_at_seq: null,
+        reason: null,
+      }),
+    );
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    const badArg = await callTool("verify_audit_chain", { extra: "nope" }, { client });
+    expect(badArg.isError).toBe(true);
+    expect(requests).toHaveLength(0);
+
+    const unsafeRes = await callTool("verify_audit_chain", {}, { client });
+    expect(unsafeRes.isError).toBe(true);
+    expect(JSON.parse(unsafeRes.content[0]?.text ?? "{}").code).toBe("INVALID_RESPONSE");
+  });
+
+  test("detect_spending_anomalies calls /public/anomalies, validates safe integers, and strips undeclared fields", async () => {
+    const { fetchFn, requests } = createMockFetch(() =>
+      jsonResponse({
+        total_expenses: 3,
+        total_amount_cents: 800000,
+        threshold_cents: 428000,
+        flag_count: 1,
+        internal_engine_host: "http://127.0.0.1:9000",
+        flags: [
+          {
+            rule_code: "CONTRACT_SPLITTING",
+            severity: "HIGH",
+            entity: "Muni Lima",
+            category: "OBRAS",
+            total_cents: 600000,
+            expense_count: 2,
+            affected_ids: [REPORT_ID, CASE_ID],
+            share_bps: 7500,
+            summary: "Multiple below-threshold disbursements",
+            raw_sql_note: "internal-leak",
+          },
+        ],
+      }),
+    );
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    const out = await callTool(
+      "detect_spending_anomalies",
+      { municipality_id: "lima", threshold_cents: 428000 },
+      { client },
+    );
+
+    expect(out.isError).toBeUndefined();
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.url).toBe(
+      "http://localhost:8080/public/anomalies?municipality_id=lima&threshold_cents=428000",
+    );
+
+    const text = out.content[0]?.text ?? "{}";
+    expect(text).not.toContain("internal_engine_host");
+    expect(text).not.toContain("raw_sql_note");
+    expect(text).not.toContain("internal-leak");
+
+    expect(JSON.parse(text)).toEqual({
+      total_expenses: 3,
+      total_amount_cents: 800000,
+      threshold_cents: 428000,
+      flag_count: 1,
+      flags: [
+        {
+          rule_code: "CONTRACT_SPLITTING",
+          severity: "HIGH",
+          entity: "Muni Lima",
+          category: "OBRAS",
+          total_cents: 600000,
+          expense_count: 2,
+          affected_ids: [REPORT_ID, CASE_ID],
+          share_bps: 7500,
+          summary: "Multiple below-threshold disbursements",
+        },
+      ],
+    });
+  });
+
+  test("detect_spending_anomalies validates threshold_cents and rejects unsafe response integers", async () => {
+    const { fetchFn, requests } = createMockFetch(() =>
+      jsonResponse({
+        total_expenses: 1,
+        total_amount_cents: Number.MAX_SAFE_INTEGER + 2,
+        threshold_cents: 428000,
+        flag_count: 0,
+        flags: [],
+      }),
+    );
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    for (const badThreshold of [0, -100, 12.5, Number.MAX_SAFE_INTEGER + 2, "428000"]) {
+      const res = await callTool(
+        "detect_spending_anomalies",
+        { municipality_id: "lima", threshold_cents: badThreshold },
+        { client },
+      );
+      expect(res.isError).toBe(true);
+      expect(JSON.parse(res.content[0]?.text ?? "{}").code).toBe("VALIDATION_ERROR");
+    }
+    expect(requests).toHaveLength(0);
+
+    const unsafeOut = await callTool(
+      "detect_spending_anomalies",
+      { municipality_id: "lima" },
+      { client },
+    );
+    expect(unsafeOut.isError).toBe(true);
+    expect(JSON.parse(unsafeOut.content[0]?.text ?? "{}").code).toBe("INVALID_RESPONSE");
+  });
+
+  test("export_ocds_releases validates OCDS 1.1 package and strips undeclared fields", async () => {
+    const { fetchFn, requests } = createMockFetch(() =>
+      jsonResponse({
+        version: "1.1",
+        uri: "/public/ocds/releases.json?municipality_id=lima",
+        publishedDate: "2026-06-15T12:00:00Z",
+        publisher: { name: "CivicTech Peru", internal_id: "hidden" },
+        extra_root: "strip-me",
+        releases: [
+          {
+            ocid: `ocds-pe-lima-${REPORT_ID}`,
+            id: REPORT_ID,
+            date: "2026-06-01T00:00:00Z",
+            tag: ["implementation"],
+            initiationType: "tender",
+            buyer: { name: "Muni Lima", tax_id: "secret" },
+            tender: {
+              id: "DOC-101",
+              title: "OBRAS",
+              status: "complete",
+              value: { amount: 2500.75, currency: "PEN" },
+            },
+            awards: [
+              {
+                id: `award-${REPORT_ID}`,
+                status: "active",
+                value: { amount: 2500.75, currency: "PEN" },
+              },
+            ],
+            contracts: [
+              {
+                id: `contract-${REPORT_ID}`,
+                awardID: `award-${REPORT_ID}`,
+                status: "active",
+                value: { amount: 2500.75, currency: "PEN" },
+              },
+            ],
+            internal_notes: "private",
+          },
+        ],
+      }),
+    );
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    const out = await callTool("export_ocds_releases", { municipality_id: "lima" }, { client });
+    expect(out.isError).toBeUndefined();
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.url).toBe(
+      "http://localhost:8080/public/ocds/releases.json?municipality_id=lima",
+    );
+
+    const text = out.content[0]?.text ?? "{}";
+    expect(text).not.toContain("extra_root");
+    expect(text).not.toContain("internal_id");
+    expect(text).not.toContain("tax_id");
+    expect(text).not.toContain("internal_notes");
+
+    const parsed = JSON.parse(text) as {
+      version: string;
+      publishedDate: string;
+      publisher: { name: string };
+      releases: Array<{ tender: { value: { amount: number; currency: string } } }>;
+    };
+    expect(parsed.version).toBe("1.1");
+    expect(parsed.publisher).toEqual({ name: "CivicTech Peru" });
+    expect(parsed.releases[0]?.tender.value).toEqual({ amount: 2500.75, currency: "PEN" });
+  });
+
+  test("export_ocds_releases rejects non-1.1 OCDS packages", async () => {
+    const { fetchFn } = createMockFetch(() =>
+      jsonResponse({
+        version: "1.0",
+        publishedDate: "2026-06-15T12:00:00Z",
+        publisher: { name: "CivicTech Peru" },
+        releases: [],
+      }),
+    );
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    const out = await callTool("export_ocds_releases", { municipality_id: "lima" }, { client });
+    expect(out.isError).toBe(true);
+    expect(JSON.parse(out.content[0]?.text ?? "{}").code).toBe("INVALID_RESPONSE");
+  });
+
+  test("track_report_by_receipt sends X-Receipt-Code header, projects DTO cleanly, and never leaks receipt_code", async () => {
+    const secretReceipt = "WXYZ-1234-ABCD-5678";
+    const { fetchFn, requests } = createMockFetch((req) => {
+      if (req.headers["x-receipt-code"] === secretReceipt) {
+        return jsonResponse({
+          status: "TRIAGED",
+          category: "SOBORNO",
+          municipality_id: "lima",
+          created_at: "2026-06-01T12:00:00Z",
+          timeline: [
+            {
+              from_status: "DRAFT",
+              to_status: "SUBMITTED",
+              action: "SUBMIT",
+              occurred_at: "2026-06-01T12:05:00Z",
+              actor_id: "should-be-stripped",
+            },
+            {
+              from_status: "SUBMITTED",
+              to_status: "TRIAGED",
+              action: "TRIAGE",
+              occurred_at: "2026-06-02T09:00:00Z",
+              reason: "confidential-moderator-note",
+            },
+          ],
+          description: "PII witness details",
+          receipt_code: secretReceipt,
+          report_id: REPORT_ID,
+        });
+      }
+      return jsonResponse(
+        {
+          error: `Receipt ${req.headers["x-receipt-code"]} not found in database`,
+          code: "NOT_FOUND",
+          retryable: false,
+        },
+        404,
+      );
+    });
+    const client = new CivicTechClient({ baseUrl: "http://localhost:8080", fetchFn });
+
+    const okOut = await callTool(
+      "track_report_by_receipt",
+      { municipality_id: "lima", receipt_code: secretReceipt },
+      { client },
+    );
+
+    expect(okOut.isError).toBeUndefined();
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.url).toBe("http://localhost:8080/public/reports/track?municipality_id=lima");
+    expect(requests[0]?.headers["x-receipt-code"]).toBe(secretReceipt);
+
+    const okText = okOut.content[0]?.text ?? "{}";
+    expect(okText).not.toContain(secretReceipt);
+    expect(okText).not.toContain("PII witness details");
+    expect(okText).not.toContain("should-be-stripped");
+    expect(okText).not.toContain("confidential-moderator-note");
+    expect(okText).not.toContain("report_id");
+
+    expect(JSON.parse(okText)).toEqual({
+      status: "TRIAGED",
+      category: "SOBORNO",
+      municipality_id: "lima",
+      created_at: "2026-06-01T12:00:00Z",
+      timeline: [
+        {
+          from_status: "DRAFT",
+          to_status: "SUBMITTED",
+          action: "SUBMIT",
+          occurred_at: "2026-06-01T12:05:00Z",
+        },
+        {
+          from_status: "SUBMITTED",
+          to_status: "TRIAGED",
+          action: "TRIAGE",
+          occurred_at: "2026-06-02T09:00:00Z",
+        },
+      ],
+    });
+
+    // Upstream 404 must NEVER echo the receipt_code or upstream error prose
+    const unknownReceipt = "ZZZZ-9999-XXXX-0000";
+    const errOut = await callTool(
+      "track_report_by_receipt",
+      { municipality_id: "lima", receipt_code: unknownReceipt },
+      { client },
+    );
+    expect(errOut.isError).toBe(true);
+    const errText = errOut.content[0]?.text ?? "{}";
+    expect(errText).not.toContain(unknownReceipt);
+    expect(errText).not.toContain("not found in database");
+    expect(JSON.parse(errText)).toEqual({
+      error: "CivicTech API resource not found (HTTP 404)",
+      status: 404,
+      code: "NOT_FOUND",
+      retryable: false,
+    });
+
+    // Validation error on blank or malformed control-char receipt_code must NEVER echo input
+    const badReceipt = "BAD\nRECEIPT-VALUE";
+    const valErr = await callTool(
+      "track_report_by_receipt",
+      { municipality_id: "lima", receipt_code: badReceipt },
+      { client },
+    );
+    expect(valErr.isError).toBe(true);
+    expect(valErr.content[0]?.text ?? "").not.toContain("BAD");
+    expect(valErr.content[0]?.text ?? "").not.toContain("RECEIPT-VALUE");
   });
 });
