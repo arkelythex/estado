@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/arkelythex/estado/services/api/internal/adapters/s3"
@@ -23,6 +24,19 @@ type Config struct {
 	AllowedOrigins      []string
 }
 
+const (
+	idempotencyTTL        = 15 * time.Minute
+	idempotencyMaxEntries = 1024
+	maxIdempotencyKeyLen  = 128
+)
+
+type idempotencyEntry struct {
+	report    domain.Report
+	err       error
+	createdAt time.Time
+	inFlight  chan struct{}
+}
+
 type Server struct {
 	store          ports.Store
 	engine         ports.EngineClient
@@ -33,6 +47,8 @@ type Server struct {
 	demoCSVPath    string
 	allowedOrigins map[string]bool
 	mux            *http.ServeMux
+	idemMu         sync.Mutex
+	idemCache      map[string]*idempotencyEntry
 }
 
 func NewServer(
@@ -69,6 +85,7 @@ func NewServer(
 		demoCSVPath:    csvPath,
 		allowedOrigins: originSet,
 		mux:            http.NewServeMux(),
+		idemCache:      make(map[string]*idempotencyEntry),
 	}
 	s.registerRoutes()
 	return s
@@ -81,6 +98,9 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
+	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
+	s.mux.HandleFunc("GET /llms.txt", s.handleLLMsTxt)
+	s.mux.HandleFunc("GET /.well-known/agent.json", s.handleAgentManifest)
 
 	s.mux.HandleFunc("GET /public/datasets", s.handleListDatasets)
 	s.mux.HandleFunc("GET /public/expenses", s.handleListExpenses)
@@ -214,22 +234,112 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report := domain.Report{
-		ID:             uuid.New(),
-		MunicipalityID: domain.NormalizeMunicipality(req.MunicipalityID),
-		Status:         "DRAFT",
-		Category:       category,
-		Description:    description,
-		CreatedAt:      time.Now().UTC(),
+	muni := domain.NormalizeMunicipality(req.MunicipalityID)
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if len(idempotencyKey) > maxIdempotencyKeyLen {
+		writeError(w, http.StatusBadRequest, "Idempotency-Key exceeds maximum length")
+		return
 	}
 
-	actor := domain.Actor{Type: "citizen", ID: "anonymous"}
-	created, err := s.store.CreateReport(r.Context(), report, actor)
+	if idempotencyKey != "" {
+		cacheKey := muni + ":" + idempotencyKey
+		now := time.Now()
+		s.idemMu.Lock()
+		s.pruneIdempotencyLocked(now)
+		if existing, ok := s.idemCache[cacheKey]; ok {
+			if existing.inFlight != nil {
+				ch := existing.inFlight
+				s.idemMu.Unlock()
+				select {
+				case <-ch:
+					if existing.err == nil {
+						writeJSON(w, http.StatusOK, existing.report)
+						return
+					}
+					s.writeMappedError(w, existing.err)
+					return
+				case <-r.Context().Done():
+					writeError(w, http.StatusRequestTimeout, "request cancelled")
+					return
+				}
+			}
+			rep := existing.report
+			s.idemMu.Unlock()
+			writeJSON(w, http.StatusOK, rep)
+			return
+		}
+
+		entry := &idempotencyEntry{
+			createdAt: now,
+			inFlight:  make(chan struct{}),
+		}
+		s.idemCache[cacheKey] = entry
+		s.idemMu.Unlock()
+
+		created, err := s.createDraftReport(r, muni, category, description)
+
+		s.idemMu.Lock()
+		entry.report = created
+		entry.err = err
+		if err != nil {
+			delete(s.idemCache, cacheKey)
+		}
+		close(entry.inFlight)
+		entry.inFlight = nil
+		s.idemMu.Unlock()
+
+		if err != nil {
+			s.writeMappedError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, created)
+		return
+	}
+
+	created, err := s.createDraftReport(r, muni, category, description)
 	if err != nil {
 		s.writeMappedError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) createDraftReport(r *http.Request, muni, category, description string) (domain.Report, error) {
+	report := domain.Report{
+		ID:             uuid.New(),
+		MunicipalityID: muni,
+		Status:         "DRAFT",
+		Category:       category,
+		Description:    description,
+		CreatedAt:      time.Now().UTC(),
+	}
+	actor := domain.Actor{Type: "citizen", ID: "anonymous"}
+	return s.store.CreateReport(r.Context(), report, actor)
+}
+
+func (s *Server) pruneIdempotencyLocked(now time.Time) {
+	for k, e := range s.idemCache {
+		if e.inFlight == nil && now.Sub(e.createdAt) >= idempotencyTTL {
+			delete(s.idemCache, k)
+		}
+	}
+	for len(s.idemCache) >= idempotencyMaxEntries {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, e := range s.idemCache {
+			if e.inFlight != nil {
+				continue
+			}
+			if oldestKey == "" || e.createdAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = e.createdAt
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(s.idemCache, oldestKey)
+	}
 }
 
 type addEvidenceRequest struct {
@@ -280,7 +390,7 @@ func (s *Server) handleAddEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if report.Status != "DRAFT" {
-		s.writeMappedError(w, fmt.Errorf("%w: cannot add evidence when report status is %s", domain.ErrInvalidTransition, report.Status))
+		s.writeInvalidTransitionError(w, fmt.Sprintf("cannot add evidence when report status is %s", report.Status), report.Status)
 		return
 	}
 
@@ -357,6 +467,10 @@ func (s *Server) handleSubmitReport(w http.ResponseWriter, r *http.Request) {
 
 	tr, err := s.engine.TransitionReport(r.Context(), report.Status, "SUBMIT")
 	if err != nil {
+		if errors.Is(err, domain.ErrInvalidTransition) {
+			s.writeInvalidTransitionError(w, err.Error(), report.Status)
+			return
+		}
 		s.writeMappedError(w, err)
 		return
 	}
@@ -437,6 +551,10 @@ func (s *Server) handleModerationTransition(action string) http.HandlerFunc {
 
 		tr, err := s.engine.TransitionReport(r.Context(), report.Status, action)
 		if err != nil {
+			if errors.Is(err, domain.ErrInvalidTransition) {
+				s.writeInvalidTransitionError(w, err.Error(), report.Status)
+				return
+			}
 			s.writeMappedError(w, err)
 			return
 		}
@@ -500,6 +618,10 @@ func (s *Server) handlePublishReport(w http.ResponseWriter, r *http.Request) {
 
 	tr, err := s.engine.TransitionReport(r.Context(), report.Status, "PUBLISH")
 	if err != nil {
+		if errors.Is(err, domain.ErrInvalidTransition) {
+			s.writeInvalidTransitionError(w, err.Error(), report.Status)
+			return
+		}
 		s.writeMappedError(w, err)
 		return
 	}
@@ -594,23 +716,37 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, roles ...doma
 	return principal, true
 }
 
+func (s *Server) writeInvalidTransitionError(w http.ResponseWriter, msg, currentStatus string) {
+	allowed := allowedActionsForStatus(currentStatus)
+	var allowedPtr *[]string
+	if allowed != nil {
+		allowedPtr = &allowed
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, errorResponse{
+		Error:          msg,
+		Code:           "INVALID_STATE_TRANSITION",
+		Retryable:      false,
+		AllowedActions: allowedPtr,
+	})
+}
+
 func (s *Server) writeMappedError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, domain.ErrValidation):
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeStructuredError(w, http.StatusBadRequest, err.Error(), "VALIDATION_ERROR", false)
 	case errors.Is(err, domain.ErrInvalidTransition):
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		writeStructuredError(w, http.StatusUnprocessableEntity, err.Error(), "INVALID_STATE_TRANSITION", false)
 	case errors.Is(err, domain.ErrNotFound):
-		writeError(w, http.StatusNotFound, "resource not found")
+		writeStructuredError(w, http.StatusNotFound, "resource not found", "NOT_FOUND", false)
 	case errors.Is(err, domain.ErrConflict):
-		writeError(w, http.StatusConflict, err.Error())
+		writeStructuredError(w, http.StatusConflict, err.Error(), "CONFLICT", true)
 	case errors.Is(err, domain.ErrUnauthorized):
-		writeError(w, http.StatusUnauthorized, "unauthorized")
+		writeStructuredError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED", false)
 	case errors.Is(err, domain.ErrForbidden):
-		writeError(w, http.StatusForbidden, "forbidden")
+		writeStructuredError(w, http.StatusForbidden, "forbidden", "FORBIDDEN", false)
 	default:
 		s.logger.Error("internal error", slog.String("error", err.Error()))
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		writeStructuredError(w, http.StatusInternalServerError, "internal server error", "INTERNAL_ERROR", true)
 	}
 }
 
@@ -621,7 +757,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 		if r.Method == http.MethodOptions {
@@ -720,12 +856,69 @@ func isValidSHA256Hex(v string) bool {
 	return true
 }
 
+type errorResponse struct {
+	Error          string    `json:"error"`
+	Code           string    `json:"code"`
+	Retryable      bool      `json:"retryable"`
+	AllowedActions *[]string `json:"allowed_actions,omitempty"`
+}
+
+func allowedActionsForStatus(status string) []string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "DRAFT":
+		return []string{"SUBMIT"}
+	case "SUBMITTED":
+		return []string{"TRIAGE", "REJECT"}
+	case "TRIAGED":
+		return []string{"VERIFY", "REJECT"}
+	case "VERIFIED":
+		return []string{"PUBLISH"}
+	case "PUBLISHED", "REJECTED":
+		return []string{}
+	default:
+		return nil
+	}
+}
+
+func errorCodeForStatus(status int) (string, bool) {
+	switch status {
+	case http.StatusBadRequest:
+		return "VALIDATION_ERROR", false
+	case http.StatusUnauthorized:
+		return "UNAUTHORIZED", false
+	case http.StatusForbidden:
+		return "FORBIDDEN", false
+	case http.StatusNotFound:
+		return "NOT_FOUND", false
+	case http.StatusConflict:
+		return "CONFLICT", true
+	case http.StatusUnprocessableEntity:
+		return "INVALID_STATE_TRANSITION", false
+	case http.StatusRequestTimeout:
+		return "REQUEST_TIMEOUT", true
+	default:
+		if status >= 500 {
+			return "INTERNAL_ERROR", true
+		}
+		return "ERROR", false
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func writeStructuredError(w http.ResponseWriter, status int, msg, code string, retryable bool) {
+	writeJSON(w, status, errorResponse{
+		Error:     msg,
+		Code:      code,
+		Retryable: retryable,
+	})
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	code, retryable := errorCodeForStatus(status)
+	writeStructuredError(w, status, msg, code, retryable)
 }

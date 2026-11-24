@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -447,5 +448,136 @@ func TestOIDCRejectsInvalidAlgWrongAudienceAndMisconfiguredIssuerOrAudience(t *t
 	})
 	if _, err := noAudSvc.Authenticate(context.Background(), "Bearer "+validSigned); !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("expected ErrUnauthorized when OIDCAudience is empty, got %v", err)
+	}
+}
+
+func TestOIDCJWKSSingleflightAndCooldown(t *testing.T) {
+	key1, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key1: %v", err)
+	}
+	unknownKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate unknownKey: %v", err)
+	}
+
+	const issuer = "https://issuer.example.test"
+	const audience = "civictech-api"
+
+	var fetchCount atomic.Int32
+	fetchEntered := make(chan struct{}, 10)
+	releaseFetch := make(chan struct{})
+
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := fetchCount.Add(1)
+		if n == 2 {
+			select {
+			case fetchEntered <- struct{}{}:
+			default:
+			}
+			<-releaseFetch
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{
+				{
+					"kid": "kid-1",
+					"kty": "RSA",
+					"alg": "RS256",
+					"use": "sig",
+					"n":   base64.RawURLEncoding.EncodeToString(key1.PublicKey.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key1.PublicKey.E)).Bytes()),
+				},
+			},
+		})
+	}))
+	defer jwksServer.Close()
+
+	svc := auth.NewService(auth.Config{
+		Mode:                auth.ModeOIDCJWKS,
+		OIDCIssuer:          issuer,
+		OIDCAudience:        audience,
+		OIDCJWKSURL:         jwksServer.URL,
+		JWKSCacheTTL:        5 * time.Minute,
+		JWKSRefreshCooldown: 150 * time.Millisecond,
+		HTTPClient:          jwksServer.Client(),
+	})
+
+	signWithKey := func(kid string, k *rsa.PrivateKey) string {
+		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"sub":   "user-concurrent",
+			"iss":   issuer,
+			"aud":   audience,
+			"exp":   time.Now().Add(10 * time.Minute).Unix(),
+			"roles": []string{"MODERATOR"},
+		})
+		tok.Header["kid"] = kid
+		signed, err := tok.SignedString(k)
+		if err != nil {
+			t.Fatalf("sign token: %v", err)
+		}
+		return signed
+	}
+
+	// Warm the cache with valid kid-1 (1 fetch).
+	validTok := signWithKey("kid-1", key1)
+	if _, err := svc.Authenticate(context.Background(), "Bearer "+validTok); err != nil {
+		t.Fatalf("warm cache failed: %v", err)
+	}
+	if got := fetchCount.Load(); got != 1 {
+		t.Fatalf("expected 1 fetch during cache warm, got %d", got)
+	}
+
+	// (a) 10 concurrent unknown-kid requests must coalesce into at most 1 JWKS fetch.
+	unknownTok := signWithKey("kid-unknown", unknownKey)
+	const workers = 10
+	startGate := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-startGate
+			_, errs[idx] = svc.Authenticate(context.Background(), "Bearer "+unknownTok)
+		}(i)
+	}
+	close(startGate)
+
+	select {
+	case <-fetchEntered:
+	case <-time.After(2 * time.Second):
+		close(releaseFetch)
+		t.Fatal("timed out waiting for coalesced JWKS fetch")
+	}
+	// Give remaining goroutines a brief moment to hit the in-flight singleflight barrier.
+	time.Sleep(20 * time.Millisecond)
+	close(releaseFetch)
+	wg.Wait()
+
+	for i, authErr := range errs {
+		if !errors.Is(authErr, domain.ErrUnauthorized) {
+			t.Fatalf("worker %d expected ErrUnauthorized, got %v", i, authErr)
+		}
+	}
+	if got := fetchCount.Load(); got != 2 {
+		t.Fatalf("expected 10 concurrent unknown-kid requests to trigger at most 1 refresh fetch (total=2), got %d", got)
+	}
+
+	// (b) A second unknown-kid within cooldown must trigger 0 fetches.
+	unknownTok2 := signWithKey("kid-unknown-2", unknownKey)
+	if _, err := svc.Authenticate(context.Background(), "Bearer "+unknownTok2); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized during cooldown, got %v", err)
+	}
+	if got := fetchCount.Load(); got != 2 {
+		t.Fatalf("expected 0 additional fetches within cooldown (total=2), got %d", got)
+	}
+
+	// After cooldown elapses, another unknown-kid is allowed to refresh once.
+	time.Sleep(170 * time.Millisecond)
+	if _, err := svc.Authenticate(context.Background(), "Bearer "+unknownTok2); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("expected ErrUnauthorized after cooldown, got %v", err)
+	}
+	if got := fetchCount.Load(); got != 3 {
+		t.Fatalf("expected 1 fetch after cooldown elapsed (total=3), got %d", got)
 	}
 }
