@@ -112,14 +112,14 @@ type PublicReportSummary struct {
 }
 
 type PublicReportDetail struct {
-	ID             uuid.UUID  `json:"id"`
-	ReportID       uuid.UUID  `json:"report_id"`
-	MunicipalityID string     `json:"municipality_id"`
-	Status         string     `json:"status"`
-	Category       string     `json:"category"`
-	PublicText     string     `json:"public_text"`
-	PublishedAt    time.Time  `json:"published_at"`
-	Evidence       []Evidence `json:"evidence"`
+	ID             uuid.UUID `json:"id"`
+	ReportID       uuid.UUID `json:"report_id"`
+	MunicipalityID string    `json:"municipality_id"`
+	Status         string    `json:"status"`
+	Category       string    `json:"category"`
+	PublicText     string    `json:"public_text"`
+	PublishedAt    time.Time `json:"published_at"`
+	EvidenceCount  int       `json:"evidence_count"`
 }
 
 type ModerationCase struct {
@@ -175,9 +175,10 @@ type IngestResult struct {
 }
 
 type PresignedUpload struct {
-	ObjectKey        string `json:"object_key"`
-	UploadURL        string `json:"upload_url"`
-	ExpiresInSeconds int64  `json:"expires_in_seconds"`
+	ObjectKey        string            `json:"object_key"`
+	UploadURL        string            `json:"upload_url"`
+	ExpiresInSeconds int64             `json:"expires_in_seconds"`
+	UploadHeaders    map[string]string `json:"upload_headers"`
 }
 
 // FormatCents formats integer cents into an exact decimal string without float arithmetic.

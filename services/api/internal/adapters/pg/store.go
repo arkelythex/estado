@@ -204,28 +204,13 @@ func (s *Store) GetPublishedReport(ctx context.Context, municipalityID string, i
 		return nil, fmt.Errorf("get published report: %w", err)
 	}
 
-	evRows, err := s.pool.Query(ctx, `
-		SELECT id, report_id, storage_ref, sha256, uploaded_at
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(*)::int
 		FROM evidence
 		WHERE report_id = $1
-		ORDER BY uploaded_at ASC
-	`, detail.ReportID)
+	`, detail.ReportID).Scan(&detail.EvidenceCount)
 	if err != nil {
-		return nil, fmt.Errorf("list published report evidence: %w", err)
-	}
-	defer evRows.Close()
-
-	detail.Evidence = make([]domain.Evidence, 0)
-	for evRows.Next() {
-		var ev domain.Evidence
-		ev.MunicipalityID = detail.MunicipalityID
-		if err := evRows.Scan(&ev.ID, &ev.ReportID, &ev.StorageRef, &ev.SHA256, &ev.UploadedAt); err != nil {
-			return nil, fmt.Errorf("scan published report evidence: %w", err)
-		}
-		detail.Evidence = append(detail.Evidence, ev)
-	}
-	if err := evRows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate published report evidence: %w", err)
+		return nil, fmt.Errorf("count published report evidence: %w", err)
 	}
 
 	return &detail, nil
@@ -314,7 +299,7 @@ func (s *Store) AddEvidence(ctx context.Context, evidence domain.Evidence, actor
 		return domain.Evidence{}, fmt.Errorf("check report for evidence: %w", err)
 	}
 	if status != "DRAFT" {
-		return domain.Evidence{}, fmt.Errorf("%w: evidence can only be attached to DRAFT reports", domain.ErrInvalidTransition)
+		return domain.Evidence{}, fmt.Errorf("%w: cannot add evidence when report status is %s", domain.ErrInvalidTransition, status)
 	}
 
 	_, err = tx.Exec(ctx, `

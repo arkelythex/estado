@@ -123,10 +123,16 @@ func (s *Signer) PresignPut(ctx context.Context, reportID uuid.UUID, contentType
 		return domain.PresignedUpload{}, fmt.Errorf("presign put object: %w", err)
 	}
 
+	uploadHeaders := map[string]string{
+		"Content-Type":                 normalizedType,
+		"x-amz-server-side-encryption": string(types.ServerSideEncryptionAes256),
+	}
+
 	return domain.PresignedUpload{
 		ObjectKey:        objectKey,
 		UploadURL:        presigned.URL,
 		ExpiresInSeconds: int64(s.expiresIn.Seconds()),
+		UploadHeaders:    uploadHeaders,
 	}, nil
 }
 

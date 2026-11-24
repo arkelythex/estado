@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -238,11 +240,12 @@ type addEvidenceRequest struct {
 }
 
 type addEvidenceResponse struct {
-	ReportID         uuid.UUID `json:"report_id"`
-	EvidenceID       uuid.UUID `json:"evidence_id"`
-	UploadURL        string    `json:"upload_url"`
-	ObjectKey        string    `json:"object_key"`
-	ExpiresInSeconds int64     `json:"expires_in_seconds"`
+	ReportID         uuid.UUID         `json:"report_id"`
+	EvidenceID       uuid.UUID         `json:"evidence_id"`
+	UploadURL        string            `json:"upload_url"`
+	ObjectKey        string            `json:"object_key"`
+	ExpiresInSeconds int64             `json:"expires_in_seconds"`
+	UploadHeaders    map[string]string `json:"upload_headers"`
 }
 
 func (s *Server) handleAddEvidence(w http.ResponseWriter, r *http.Request) {
@@ -267,19 +270,20 @@ func (s *Server) handleAddEvidence(w http.ResponseWriter, r *http.Request) {
 		sizeBytes = *req.SizeBytes
 	}
 
-	if _, _, err := s3.ValidateEvidenceUpload(req.ContentType, sizeBytes); err != nil {
+	normalizedType, _, err := s3.ValidateEvidenceUpload(req.ContentType, sizeBytes)
+	if err != nil {
 		s.writeMappedError(w, err)
 		return
 	}
 
 	muni := domain.NormalizeMunicipality(req.MunicipalityID)
-	rep, err := s.store.GetReport(r.Context(), muni, reportID)
+	report, err := s.store.GetReport(r.Context(), muni, reportID)
 	if err != nil {
 		s.writeMappedError(w, err)
 		return
 	}
-	if rep.Status != "DRAFT" {
-		writeError(w, http.StatusUnprocessableEntity, "evidence can only be attached to draft reports")
+	if report.Status != "DRAFT" {
+		s.writeMappedError(w, fmt.Errorf("%w: cannot add evidence when report status is %s", domain.ErrInvalidTransition, report.Status))
 		return
 	}
 
@@ -291,10 +295,18 @@ func (s *Server) handleAddEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	presigned, err := s.signer.PresignPut(r.Context(), reportID, req.ContentType, sizeBytes)
+	presigned, err := s.signer.PresignPut(r.Context(), reportID, normalizedType, sizeBytes)
 	if err != nil {
 		s.writeMappedError(w, err)
 		return
+	}
+
+	uploadHeaders := presigned.UploadHeaders
+	if len(uploadHeaders) == 0 {
+		uploadHeaders = map[string]string{
+			"Content-Type":                 normalizedType,
+			"x-amz-server-side-encryption": "AES256",
+		}
 	}
 
 	evidence := domain.Evidence{
@@ -318,6 +330,7 @@ func (s *Server) handleAddEvidence(w http.ResponseWriter, r *http.Request) {
 		UploadURL:        presigned.UploadURL,
 		ObjectKey:        presigned.ObjectKey,
 		ExpiresInSeconds: presigned.ExpiresInSeconds,
+		UploadHeaders:    uploadHeaders,
 	})
 }
 
@@ -333,7 +346,10 @@ func (s *Server) handleSubmitReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req submitRequest
-	_ = decodeOptionalJSON(r, &req)
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
 
 	muni := municipalityFromQueryOrBody(r, req.MunicipalityID)
 	report, err := s.store.GetReport(r.Context(), muni, reportID)
@@ -524,7 +540,10 @@ func (s *Server) handleIngestDemo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ingestDemoRequest
-	_ = decodeOptionalJSON(r, &req)
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
 	muni := municipalityFromQueryOrBody(r, req.MunicipalityID)
 
 	rawCSV, err := os.ReadFile(s.demoCSVPath)
@@ -667,10 +686,21 @@ func decodeOptionalJSON(r *http.Request, dst any) error {
 		return nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil || len(strings.TrimSpace(string(raw))) == 0 {
+	if err != nil {
+		return errors.New("invalid json payload")
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
 		return nil
 	}
-	return json.Unmarshal(raw, dst)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return errors.New("invalid json payload")
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("invalid json payload")
+	}
+	return nil
 }
 
 func municipalityFromQueryOrBody(r *http.Request, bodyValue string) string {
