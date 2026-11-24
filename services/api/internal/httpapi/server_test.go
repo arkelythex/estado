@@ -183,6 +183,9 @@ func (f *fakeStore) AddEvidence(_ context.Context, evidence domain.Evidence, act
 	if !ok || r.MunicipalityID != evidence.MunicipalityID {
 		return domain.Evidence{}, domain.ErrNotFound
 	}
+	if r.Status != "DRAFT" {
+		return domain.Evidence{}, domain.ErrInvalidTransition
+	}
 	f.evidence[evidence.ReportID] = append(f.evidence[evidence.ReportID], evidence)
 	f.recordAudit(actor, "evidence_attach", "evidence", evidence.ID.String(), map[string]any{
 		"report_id": evidence.ReportID.String(),

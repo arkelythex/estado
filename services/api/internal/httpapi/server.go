@@ -273,8 +273,13 @@ func (s *Server) handleAddEvidence(w http.ResponseWriter, r *http.Request) {
 	}
 
 	muni := domain.NormalizeMunicipality(req.MunicipalityID)
-	if _, err := s.store.GetReport(r.Context(), muni, reportID); err != nil {
+	rep, err := s.store.GetReport(r.Context(), muni, reportID)
+	if err != nil {
 		s.writeMappedError(w, err)
+		return
+	}
+	if rep.Status != "DRAFT" {
+		writeError(w, http.StatusUnprocessableEntity, "evidence can only be attached to draft reports")
 		return
 	}
 
@@ -630,7 +635,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		route := r.Pattern
 		if route == "" {
-			route = r.URL.Path
+			route = "unmatched"
 		}
 		s.metrics.ObserveHTTP(r.Method, route, rec.status, dur)
 

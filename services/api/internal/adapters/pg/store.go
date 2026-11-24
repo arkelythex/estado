@@ -305,13 +305,16 @@ func (s *Store) AddEvidence(ctx context.Context, evidence domain.Evidence, actor
 
 	var status string
 	err = tx.QueryRow(ctx, `
-		SELECT status FROM reports WHERE id = $1 AND municipality_id = $2
+		SELECT status FROM reports WHERE id = $1 AND municipality_id = $2 FOR UPDATE
 	`, evidence.ReportID, evidence.MunicipalityID).Scan(&status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Evidence{}, domain.ErrNotFound
 		}
 		return domain.Evidence{}, fmt.Errorf("check report for evidence: %w", err)
+	}
+	if status != "DRAFT" {
+		return domain.Evidence{}, fmt.Errorf("%w: evidence can only be attached to DRAFT reports", domain.ErrInvalidTransition)
 	}
 
 	_, err = tx.Exec(ctx, `
