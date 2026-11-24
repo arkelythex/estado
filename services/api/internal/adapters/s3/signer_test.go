@@ -22,6 +22,14 @@ func TestValidateEvidenceUpload(t *testing.T) {
 		t.Fatalf("expected ErrValidation for disallowed mime, got %v", err)
 	}
 
+	if _, _, err := s3.ValidateEvidenceUpload("application/pdf", 0); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("expected ErrValidation for zero size_bytes, got %v", err)
+	}
+
+	if _, _, err := s3.ValidateEvidenceUpload("application/pdf", -1); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("expected ErrValidation for negative size_bytes, got %v", err)
+	}
+
 	if _, _, err := s3.ValidateEvidenceUpload("application/pdf", s3.MaxEvidenceSizeBytes+1); !errors.Is(err, domain.ErrValidation) {
 		t.Fatalf("expected ErrValidation for oversized file, got %v", err)
 	}

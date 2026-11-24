@@ -261,14 +261,11 @@ func (s *Server) handleAddEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sizeBytes int64
-	if req.SizeBytes != nil {
-		if *req.SizeBytes <= 0 || *req.SizeBytes > s3.MaxEvidenceSizeBytes {
-			writeError(w, http.StatusBadRequest, "size_bytes must be between 1 and 10485760 bytes")
-			return
-		}
-		sizeBytes = *req.SizeBytes
+	if req.SizeBytes == nil || *req.SizeBytes <= 0 || *req.SizeBytes > s3.MaxEvidenceSizeBytes {
+		writeError(w, http.StatusBadRequest, "size_bytes must be between 1 and 10485760 bytes")
+		return
 	}
+	sizeBytes := *req.SizeBytes
 
 	normalizedType, _, err := s3.ValidateEvidenceUpload(req.ContentType, sizeBytes)
 	if err != nil {

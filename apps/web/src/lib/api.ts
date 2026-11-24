@@ -298,7 +298,7 @@ function decodeOptionalStringRecord(
   key: string,
 ): Record<string, string> | undefined {
   const value = obj[key]
-  if (value === undefined) {
+  if (value === undefined || value === null) {
     return undefined
   }
   if (!isRecord(value)) {

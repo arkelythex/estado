@@ -321,4 +321,69 @@ describe('admin API client', () => {
       }
     }
   })
+
+  test('rejects malformed or unexpected API responses with ApiError(502)', async () => {
+    const assertThrows502 = async (fn: () => Promise<unknown>) => {
+      try {
+        await fn()
+        expect.unreachable('should have thrown ApiError(502)')
+      } catch (err: unknown) {
+        expect(err).toBeInstanceOf(ApiError)
+        if (err instanceof ApiError) {
+          expect(err.status).toBe(502)
+        }
+      }
+    }
+
+    // Non-array queue
+    mockFetch(() => Response.json({ cases: [] }))
+    await assertThrows502(() =>
+      fetchModerationCases('mod-token', { municipalityId: 'lima' }, baseUrl),
+    )
+
+    // Invalid report status
+    mockFetch(() =>
+      Response.json([
+        {
+          id: 'case-1',
+          report_id: 'rep-1',
+          municipality_id: 'lima',
+          status: 'INVALID_STATUS',
+          category: 'OBRAS',
+          description: 'Detalle',
+          assigned_to: null,
+          notes: null,
+          created_at: '2026-06-15T10:00:00Z',
+          updated_at: '2026-06-15T10:00:00Z',
+        },
+      ]),
+    )
+    await assertThrows502(() =>
+      fetchModerationCases('mod-token', { municipalityId: 'lima' }, baseUrl),
+    )
+
+    // Non-integer rows_ingested
+    mockFetch(() =>
+      Response.json({
+        municipality_id: 'lima',
+        dataset_version_id: 'ver-1',
+        checksum_sha256: 'abc123',
+        rows_ingested: 1.5,
+        deduplicated: false,
+      }),
+    )
+    await assertThrows502(() => runDemoIngest('admin-token', 'lima', baseUrl))
+
+    // Non-boolean deduplicated
+    mockFetch(() =>
+      Response.json({
+        municipality_id: 'lima',
+        dataset_version_id: 'ver-1',
+        checksum_sha256: 'abc123',
+        rows_ingested: 3,
+        deduplicated: 'true',
+      }),
+    )
+    await assertThrows502(() => runDemoIngest('admin-token', 'lima', baseUrl))
+  })
 })

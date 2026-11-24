@@ -94,7 +94,7 @@ function IngestAdminPage() {
             type="button"
             className="btn btn-primary"
             onClick={() => void handleRunDemoIngest()}
-            disabled={isRunning}
+            disabled={!hasToken || isRunning}
           >
             {isRunning ? 'Ejecutando ingesta...' : 'Ejecutar Ingesta Demo'}
           </button>

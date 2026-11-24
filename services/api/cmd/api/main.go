@@ -97,19 +97,28 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	serverErrCh := make(chan error, 1)
 	go func() {
 		logger.Info("starting api server", slog.String("bind_addr", bindAddr), slog.String("engine_url", engineURL))
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("http server failed", slog.String("error", err.Error()))
+			serverErrCh <- err
 			stop()
 		}
 	}()
 
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown error", slog.String("error", err.Error()))
+	}
+	cancel()
+
+	select {
+	case <-serverErrCh:
+		pool.Close()
+		os.Exit(1)
+	default:
 	}
 }
 
