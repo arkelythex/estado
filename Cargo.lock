@@ -123,8 +123,10 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 name = "civictech-audit"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 
@@ -142,6 +144,7 @@ name = "civictech-engine"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "civictech-audit",
  "civictech-domain",
  "civictech-ingest",
  "civictech-observability",

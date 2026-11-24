@@ -1,3 +1,6 @@
+pub mod anomalies;
+
+use anomalies::{analyze_expenses, AnalyzeExpensesRequest, AnomalyError};
 use axum::{
     extract::{rejection::JsonRejection, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
@@ -5,6 +8,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use civictech_audit::{compute_event_hash, verify_chain, AuditChainEntry, AuditChainInput};
 use civictech_domain::{transition, ReportStatus, VerificationAction};
 use civictech_ingest::{parse_expenses_csv_cents, sha256_hex, ExpenseRowCents};
 use serde::{Deserialize, Serialize};
@@ -28,6 +32,12 @@ pub fn app(state: EngineState) -> Router {
         .route("/health", get(health))
         .route("/internal/v1/reports/transition", post(transition_report))
         .route("/internal/v1/ingest/parse-expenses", post(parse_expenses))
+        .route("/internal/v1/audit/hash", post(audit_hash))
+        .route("/internal/v1/audit/verify-chain", post(audit_verify_chain))
+        .route(
+            "/internal/v1/analytics/red-flags",
+            post(analytics_red_flags),
+        )
         .with_state(state)
 }
 
@@ -178,6 +188,84 @@ async fn parse_expenses(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct AuditHashResponse {
+    event_hash: String,
+}
+
+async fn audit_hash(
+    State(state): State<EngineState>,
+    headers: HeaderMap,
+    payload: Result<Json<AuditChainInput>, JsonRejection>,
+) -> Response {
+    if !is_authorized_internal(&headers, &state) {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+
+    let Json(input) = match payload {
+        Ok(json) => json,
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid request payload"),
+    };
+
+    (
+        StatusCode::OK,
+        Json(AuditHashResponse {
+            event_hash: compute_event_hash(&input),
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct VerifyChainRequest {
+    entries: Vec<AuditChainEntry>,
+}
+
+async fn audit_verify_chain(
+    State(state): State<EngineState>,
+    headers: HeaderMap,
+    payload: Result<Json<VerifyChainRequest>, JsonRejection>,
+) -> Response {
+    if !is_authorized_internal(&headers, &state) {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+
+    let Json(req) = match payload {
+        Ok(json) => json,
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid request payload"),
+    };
+
+    (StatusCode::OK, Json(verify_chain(&req.entries))).into_response()
+}
+
+async fn analytics_red_flags(
+    State(state): State<EngineState>,
+    headers: HeaderMap,
+    payload: Result<Json<AnalyzeExpensesRequest>, JsonRejection>,
+) -> Response {
+    if !is_authorized_internal(&headers, &state) {
+        return error_response(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+
+    let Json(req) = match payload {
+        Ok(json) => json,
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid request payload"),
+    };
+
+    match analyze_expenses(&req) {
+        Ok(res) => (StatusCode::OK, Json(res)).into_response(),
+        Err(AnomalyError::InvalidThreshold) => {
+            error_response(StatusCode::BAD_REQUEST, "invalid threshold_cents")
+        }
+        Err(AnomalyError::InvalidAmount) => {
+            error_response(StatusCode::BAD_REQUEST, "invalid amount_cents")
+        }
+        Err(AnomalyError::AmountOverflow) => {
+            error_response(StatusCode::BAD_REQUEST, "amount_cents overflow")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{app, EngineState};
@@ -246,10 +334,25 @@ mod tests {
         let ingest_body = Some(json!({
             "csv": "entity,category,amount\nMuni,OBRAS,10.00\n",
         }));
+        let audit_hash_body = Some(json!({
+            "prev_hash": civictech_audit::GENESIS_HASH,
+            "occurred_at": "2026-03-01T10:00:00Z",
+            "actor_type": "CITIZEN",
+            "actor_id": "anon-1",
+            "action": "SUBMIT_REPORT",
+            "target_type": "REPORT",
+            "target_id": "rep-1",
+            "metadata_json": "{}"
+        }));
+        let verify_chain_body = Some(json!({ "entries": [] }));
+        let red_flags_body = Some(json!({ "expenses": [] }));
 
         for (uri, payload) in [
             ("/internal/v1/reports/transition", transition_body),
             ("/internal/v1/ingest/parse-expenses", ingest_body),
+            ("/internal/v1/audit/hash", audit_hash_body),
+            ("/internal/v1/audit/verify-chain", verify_chain_body),
+            ("/internal/v1/analytics/red-flags", red_flags_body),
         ] {
             let (s_missing, _) = send_json(test_state(), "POST", uri, None, payload.clone()).await;
             assert_eq!(s_missing, StatusCode::UNAUTHORIZED);
@@ -431,5 +534,131 @@ mod tests {
             assert_eq!(body["error"], "invalid csv input");
             assert!(!body.to_string().contains("SECRET_PII_TOKEN"));
         }
+    }
+
+    #[tokio::test]
+    async fn audit_hash_and_verify_chain_endpoints_detect_valid_and_tampered() {
+        let input1 = json!({
+            "prev_hash": civictech_audit::GENESIS_HASH,
+            "occurred_at": "2026-03-01T10:00:00Z",
+            "actor_type": "CITIZEN",
+            "actor_id": "anon-1",
+            "action": "SUBMIT_REPORT",
+            "target_type": "REPORT",
+            "target_id": "rep-1",
+            "metadata_json": "{\"municipality_id\":\"muni-1\"}"
+        });
+
+        let (s1, b1) = send_json(
+            test_state(),
+            "POST",
+            "/internal/v1/audit/hash",
+            Some("test-internal-engine-token"),
+            Some(input1.clone()),
+        )
+        .await;
+        assert_eq!(s1, StatusCode::OK);
+        let h1 = b1["event_hash"].as_str().expect("event_hash string");
+        assert_eq!(h1.len(), 64);
+
+        let entry1 = json!({
+            "seq_no": 1,
+            "prev_hash": civictech_audit::GENESIS_HASH,
+            "event_hash": h1,
+            "occurred_at": "2026-03-01T10:00:00Z",
+            "actor_type": "CITIZEN",
+            "actor_id": "anon-1",
+            "action": "SUBMIT_REPORT",
+            "target_type": "REPORT",
+            "target_id": "rep-1",
+            "metadata_json": "{\"municipality_id\":\"muni-1\"}"
+        });
+
+        let (sv, bv) = send_json(
+            test_state(),
+            "POST",
+            "/internal/v1/audit/verify-chain",
+            Some("test-internal-engine-token"),
+            Some(json!({ "entries": [entry1.clone()] })),
+        )
+        .await;
+        assert_eq!(sv, StatusCode::OK);
+        assert_eq!(bv["valid"], true);
+        assert_eq!(bv["checked_events"], 1);
+        assert_eq!(bv["head_hash"], h1);
+
+        let mut tampered_entry = entry1;
+        tampered_entry["action"] = json!("TAMPERED_ACTION");
+        let (st, bt) = send_json(
+            test_state(),
+            "POST",
+            "/internal/v1/audit/verify-chain",
+            Some("test-internal-engine-token"),
+            Some(json!({ "entries": [tampered_entry] })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(bt["valid"], false);
+        assert_eq!(bt["broken_at_seq"], 1);
+    }
+
+    #[tokio::test]
+    async fn analytics_red_flags_endpoint_detects_all_rules_and_rejects_negative_inputs() {
+        let (status, body) = send_json(
+            test_state(),
+            "POST",
+            "/internal/v1/analytics/red-flags",
+            Some("test-internal-engine-token"),
+            Some(json!({
+                "threshold_cents": 4280000,
+                "expenses": [
+                    { "id": "1", "entity": "Muni X", "category": "OBRAS", "amount_cents": 2200000, "occurred_on": "2026-02-01" },
+                    { "id": "2", "entity": "Muni X", "category": "OBRAS", "amount_cents": 2200000, "occurred_on": "2026-02-01" },
+                    { "id": "3", "entity": "Muni Y", "category": "SALUD", "amount_cents": 500000, "occurred_on": "2026-02-02" }
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total_expenses"], 3);
+        assert_eq!(body["total_amount_cents"], 4_900_000);
+        let flags = body["flags"].as_array().expect("flags array");
+        let codes: Vec<&str> = flags
+            .iter()
+            .filter_map(|f| f["rule_code"].as_str())
+            .collect();
+        assert!(codes.contains(&"CONTRACT_SPLITTING"));
+        assert!(codes.contains(&"DUPLICATE_DISBURSEMENT"));
+        assert!(codes.contains(&"HIGH_ENTITY_CONCENTRATION"));
+
+        let (s_neg_amount, b_neg_amount) = send_json(
+            test_state(),
+            "POST",
+            "/internal/v1/analytics/red-flags",
+            Some("test-internal-engine-token"),
+            Some(json!({
+                "expenses": [
+                    { "id": "SECRET_PII_ID", "entity": "Muni X", "category": "OBRAS", "amount_cents": -100 }
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(s_neg_amount, StatusCode::BAD_REQUEST);
+        assert_eq!(b_neg_amount["error"], "invalid amount_cents");
+        assert!(!b_neg_amount.to_string().contains("SECRET_PII_ID"));
+
+        let (s_bad_thresh, b_bad_thresh) = send_json(
+            test_state(),
+            "POST",
+            "/internal/v1/analytics/red-flags",
+            Some("test-internal-engine-token"),
+            Some(json!({
+                "threshold_cents": -50,
+                "expenses": []
+            })),
+        )
+        .await;
+        assert_eq!(s_bad_thresh, StatusCode::BAD_REQUEST);
+        assert_eq!(b_bad_thresh["error"], "invalid threshold_cents");
     }
 }

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 axum = "0.8"
+civictech-audit = { path = "../audit" }
 civictech-domain = { path = "../domain" }
 civictech-ingest = { path = "../ingest" }
 civictech-observability = { path = "../observability" }
