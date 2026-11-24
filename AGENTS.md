@@ -3,7 +3,7 @@
 > **Última actualización**: 2026-06-29
 > Estas reglas son aplicadas por Gentleman Guardian Angel (gga) en cada commit y PR.
 >
-> Stack: Rust (Axum) + Next.js + pnpm monorepo
+> Stack: Go (HTTP API) + Rust (Critical Engines) + Bun & TanStack Start (TypeScript Frontends)
 > Ámbito: civic tech, transparencia gubernamental, participación ciudadana, servicios públicos digitales
 
 ## ⛔ NON-NEGOTIABLES (MUST NOT)
@@ -20,8 +20,8 @@ These rules are absolute. Any violation causes the review to FAIL.
 
 ## ✅ REQUIRED PRACTICES (MUST)
 
-- **MUST** validate all API inputs at service boundaries (Axum extractors or Zod schemas).
-- **MUST** preserve end-to-end type safety across the full stack (Rust types → OpenAPI → TypeScript).
+- **MUST** validate all API inputs at service boundaries (Go request validation / Zod schemas).
+- **MUST** preserve end-to-end type safety across the full stack (Rust/Go contracts → OpenAPI → strict TypeScript).
 - **MUST** add or update tests for changed behavior — domain logic MUST have unit tests.
 - **MUST** update docs when public behavior, API contracts, setup, or security assumptions change.
 - **MUST** prefer small, verifiable, reversible changes over large refactors.
@@ -30,13 +30,11 @@ These rules are absolute. Any violation causes the review to FAIL.
 
 ## 🏗️ Architecture Rules
 
-- Use **Hexagonal Architecture (Ports & Adapters)** in Rust crates: domain core is framework-free; adapters live in `crates/adapters_*`.
-- Keep **domain logic deterministic** and covered by tests — no I/O, no random, no clock in domain.
-- **Adapters belong in `crates/adapters_*`** (pg, s3, redis), not in domain or usecases.
-- `crates/domain` must stay **framework-free** — zero imports from axum, sqlx, or any web/framework crate.
-- `crates/usecases` depends on domain only (via trait boundaries).
-- API layer (`crates/api`) is thin: parse request → call usecase → format response. No business logic.
-- Next.js apps (`apps/web`, `apps/admin`) consume the Rust API via fetch; no direct DB access from frontend.
+- Use **Hexagonal Architecture (Ports & Adapters)** in both Go (`services/api`) and Rust (`crates/*`): domain core is framework-free; adapters live in `internal/adapters/*` (Go) and `crates/adapters_*` (Rust).
+- Keep **critical domain engines in Rust** (`crates/domain`, `crates/verify`, `crates/ingest`, `crates/engine`) — deterministic, covered by tests, no I/O or clock in `crates/domain`.
+- `crates/engine` exposes an internal HTTP service consumed by the Go backend (`services/api`) for report state-machine transitions and CSV ingestion/SHA-256/exact-money parsing.
+- Go backend (`services/api`) handles public/citizen/moderation/admin HTTP routes, OIDC/RBAC auth, Postgres (parameterized `pgx` queries), S3/MinIO presigned URLs, and audit logging.
+- Frontends (`apps/web`, `apps/admin`) are strict TypeScript apps built with **Bun + TanStack Start** and consume the Go API via HTTP; no direct DB access from frontend.
 
 ## 🔒 Security & Privacy Rules
 
@@ -44,7 +42,7 @@ These rules are absolute. Any violation causes the review to FAIL.
 - **MUST NOT** log raw request bodies or query parameters that may contain PII — use structured logging with redacted fields.
 - **MUST validate and sanitize** all file uploads (evidence attachments): check MIME type, size limits, scan for malware vectors.
 - **MUST implement rate limiting** on public report submission endpoints.
-- **MUST use parameterized queries** via sqlx — no raw string interpolation in SQL.
+- **MUST** use parameterized queries via `pgx` (Go) or `sqlx` (Rust) — no raw string interpolation in SQL.
 - **MUST follow least-privilege** for OIDC roles: citizen / moderator / admin scopes enforced per endpoint.
 - **MUST NOT** store plaintext tokens or session secrets — use secure, HttpOnly cookies or short-lived bearer tokens.
 - **MUST hash or encrypt** evidence at rest (S3 server-side encryption).
@@ -64,7 +62,8 @@ These rules are absolute. Any violation causes the review to FAIL.
 - **MUST** keep commits atomic — one logical change per commit.
 - **MUST NOT** add `Co-Authored-By` or AI attribution to commits.
 - **Rust**: follow `cargo fmt` + `cargo clippy` — these are enforced in CI.
-- **TypeScript/Next.js**: use the project's existing lint config; prefer Biome if available.
+- **Go**: follow `gofmt` + `go vet` + `go test ./...` — enforced in CI.
+- **TypeScript/Bun**: strict TypeScript (`strict: true`, zero `any`), `bun test`, and `bun run build`.
 - **Prefer** small focused files over large monolithic ones.
 - **Document unsafe or complex** logic with inline comments explaining _why_, not _what_.
 
@@ -84,8 +83,7 @@ When reviewing code that touches public-interest flows:
 
 - **MUST NOT** introduce unnecessary dependencies to Rust crates or JS packages.
 - **Prefer** existing patterns and libraries over new ones.
-- **MUST** keep lockfiles in sync (`pnpm-lock.yaml` matches `package.json`, `Cargo.lock` matches `Cargo.toml`).
-- **MUST** use `pnpm install --frozen-lockfile` in CI.
+- **MUST** keep lockfiles in sync (`bun.lock` matches `package.json`, `go.sum` matches `go.mod`, `Cargo.lock` matches `Cargo.toml`).
 
 ## 🚫 REJECT (Fail Review)
 

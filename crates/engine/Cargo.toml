@@ -1,0 +1,20 @@
+[package]
+name = "civictech-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = "0.8"
+civictech-domain = { path = "../domain" }
+civictech-ingest = { path = "../ingest" }
+civictech-observability = { path = "../observability" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
