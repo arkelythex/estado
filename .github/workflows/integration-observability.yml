@@ -18,54 +18,115 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Generate ephemeral CI secrets
+        run: |
+          pg_pass="$(openssl rand -hex 16)"
+          minio_pass="$(openssl rand -hex 16)"
+          rustfs_key="$(openssl rand -base64 32)"
+          kc_db_pass="$(openssl rand -hex 16)"
+          kc_admin_pass="$(openssl rand -hex 16)"
+          gf_pass="$(openssl rand -hex 16)"
+          engine_tok="$(openssl rand -hex 16)"
+          dev_admin_tok="$(openssl rand -hex 16)"
+          dev_mod_tok="$(openssl rand -hex 16)"
+
+          for val in "$pg_pass" "$minio_pass" "$rustfs_key" "$kc_db_pass" "$kc_admin_pass" "$gf_pass" "$engine_tok" "$dev_admin_tok" "$dev_mod_tok"; do
+            echo "::add-mask::$val"
+          done
+
+          {
+            echo "POSTGRES_PASSWORD=$pg_pass"
+            echo "DATABASE_URL=postgres://postgres:${pg_pass}@localhost:5432/civictech"
+            echo "MINIO_ROOT_PASSWORD=$minio_pass"
+            echo "RUSTFS_SSE_S3_MASTER_KEY=$rustfs_key"
+            echo "KEYCLOAK_DB_PASSWORD=$kc_db_pass"
+            echo "KEYCLOAK_ADMIN_PASSWORD=$kc_admin_pass"
+            echo "GF_SECURITY_ADMIN_PASSWORD=$gf_pass"
+            echo "ENGINE_INTERNAL_TOKEN=$engine_tok"
+            echo "AUTH_DEV_ADMIN_TOKEN=$dev_admin_tok"
+            echo "AUTH_DEV_MODERATOR_TOKEN=$dev_mod_tok"
+          } >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: services/api/go.sum
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install PostgreSQL client and jq
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client jq
 
       - name: Start infra services
         run: |
-          docker compose -f infra/docker-compose.yml up -d postgres minio minio-init prometheus grafana
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+          docker compose -f infra/docker-compose.yml up -d postgres minio prometheus grafana
+          docker compose -f infra/docker-compose.yml run --rm minio-init
 
       - name: Validate observability assets
         run: bash ./scripts/validate-observability-assets.sh
 
       - name: Wait for Postgres
         run: |
-          until PGPASSWORD=postgres psql -h localhost -U postgres -d civictech -c "select 1" >/dev/null 2>&1; do
+          until PGPASSWORD="$POSTGRES_PASSWORD" psql -h localhost -U postgres -d civictech -c "select 1" >/dev/null 2>&1; do
             sleep 2
           done
 
       - name: Apply migrations
-        run: bash ./scripts/migrate.sh
+        run: DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@localhost:5432/civictech" bash ./scripts/migrate.sh
 
-      - name: Start API in dev auth mode
+      - name: Start Rust critical engine
+        run: |
+          ENGINE_BIND_ADDR=127.0.0.1:8090 \
+          ENGINE_INTERNAL_TOKEN="$ENGINE_INTERNAL_TOKEN" \
+          cargo run -p civictech-engine > /tmp/civictech-engine.log 2>&1 &
+          echo $! > /tmp/civictech-engine.pid
+
+      - name: Wait for Rust engine
+        run: bash ./scripts/wait-for-http.sh http://127.0.0.1:8090/health 200 180
+
+      - name: Start Go API in dev auth mode
         run: |
           AUTH_MODE=dev_static \
-          DATABASE_URL=postgres://postgres:postgres@localhost:5432/civictech \
+          API_BIND_ADDR=0.0.0.0:8080 \
+          DATABASE_URL="postgres://postgres:${POSTGRES_PASSWORD}@localhost:5432/civictech" \
+          ENGINE_URL=http://127.0.0.1:8090 \
+          ENGINE_INTERNAL_TOKEN="$ENGINE_INTERNAL_TOKEN" \
+          AUTH_DEV_ADMIN_TOKEN="$AUTH_DEV_ADMIN_TOKEN" \
+          AUTH_DEV_MODERATOR_TOKEN="$AUTH_DEV_MODERATOR_TOKEN" \
           S3_ENDPOINT=http://localhost:9000 \
           S3_REGION=us-east-1 \
           S3_ACCESS_KEY=minio \
-          S3_SECRET_KEY=minio12345 \
+          S3_SECRET_KEY="$MINIO_ROOT_PASSWORD" \
           S3_EVIDENCE_BUCKET=evidence \
-          cargo run -p civictech-api > /tmp/civictech-api.log 2>&1 &
+          bash -c 'cd services/api && exec go run ./cmd/api' > /tmp/civictech-api.log 2>&1 &
           echo $! > /tmp/civictech-api.pid
 
       - name: Wait for API
         run: bash ./scripts/wait-for-http.sh http://localhost:8080/health 200 120
 
-      - name: Validate workflow-B transitions (including invalid 409 paths)
-        run: bash ./scripts/smoke-workflow-b.sh
+      - name: Validate E2E smoke
+        env:
+          REQUIRE_AUDIT_DB_CHECK: "1"
+        run: bun run smoke:e2e
+
+      - name: Validate workflow-B transitions (including invalid 422 paths)
+        env:
+          REQUIRE_AUDIT_DB_CHECK: "1"
+        run: bun run smoke:workflow-b
 
       - name: Validate observability stack
-        run: bash ./scripts/observability-smoke.sh
+        run: GRAFANA_URL=http://localhost:3002 bun run obs:smoke
 
       - name: Print logs on failure
         if: failure()
         run: |
+          echo "---- civictech-engine.log ----"
+          cat /tmp/civictech-engine.log || true
           echo "---- civictech-api.log ----"
           cat /tmp/civictech-api.log || true
           echo "---- docker compose logs ----"
@@ -76,5 +137,8 @@ jobs:
         run: |
           if [[ -f /tmp/civictech-api.pid ]]; then
             kill "$(cat /tmp/civictech-api.pid)" || true
+          fi
+          if [[ -f /tmp/civictech-engine.pid ]]; then
+            kill "$(cat /tmp/civictech-engine.pid)" || true
           fi
           docker compose -f infra/docker-compose.yml down -v

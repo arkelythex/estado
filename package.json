@@ -1,9 +1,11 @@
 {
   "name": "civictech-peru",
   "private": true,
-  "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "api:dev": "cargo run -p civictech-api",
+    "engine:dev": "cargo run -p civictech-engine",
+    "api:dev": "cd services/api && go run ./cmd/api",
+    "web:dev": "cd apps/web && bun run dev",
+    "admin:dev": "cd apps/admin && bun run dev",
     "bootstrap": "bash ./scripts/bootstrap.sh",
     "db:migrate": "bash ./scripts/migrate.sh",
     "db:seed": "bash ./scripts/seed.sh",
@@ -16,16 +18,17 @@
     "keycloak:wait": "bash ./scripts/keycloak/wait-ready.sh 120",
     "api:wait": "bash ./scripts/wait-for-http.sh http://localhost:8080/health 200 60",
     "dev:all": "bash ./scripts/dev-all.sh",
-    "dev": "pnpm --parallel --filter ./apps/web --filter ./apps/admin dev",
-    "lint": "pnpm -r --if-present lint",
+    "lint": "bun run --cwd apps/web typecheck && bun run --cwd apps/admin typecheck",
+    "test": "bun run --cwd apps/web test && bun run --cwd apps/admin test",
+    "build": "bun run --cwd apps/web build && bun run --cwd apps/admin build",
+    "lint:go": "cd services/api && test -z \"$(gofmt -l .)\" && go vet ./...",
+    "test:go": "cd services/api && go test -count=1 ./... && go build ./...",
+    "lint:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
+    "test:rust": "cargo test --workspace",
     "smoke:rbac": "bash ./scripts/smoke-auth-rbac.sh",
     "smoke:e2e": "bash ./scripts/smoke-e2e.sh",
     "smoke:workflow-b": "bash ./scripts/smoke-workflow-b.sh",
-    "test": "pnpm -r --if-present test",
-    "format": "pnpm -r --if-present format",
-    "lint:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features -- -D warnings",
-    "test:rust": "cargo test --workspace --all-features",
-    "quality:check": "pnpm lint && pnpm test && pnpm lint:rust && pnpm test:rust"
+    "quality:check": "bun run lint && bun run test && bun run build && bun run lint:go && bun run test:go && bun run lint:rust && bun run test:rust"
   },
   "workspaces": [
     "apps/*",

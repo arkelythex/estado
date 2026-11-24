@@ -2,10 +2,12 @@
 /target
 **/*.rs.bk
 
-# Node
+# Node / Bun / Vite / TanStack Start
 node_modules
 .pnpm-store
 .next
+dist
+.tanstack
 
 # Env
 .env
