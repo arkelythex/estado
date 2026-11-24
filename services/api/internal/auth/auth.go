@@ -38,15 +38,16 @@ func ParseMode(raw string) Mode {
 }
 
 type Config struct {
-	Mode              Mode
-	DevAdminToken     string
-	DevModeratorToken string
-	OIDCIssuer        string
-	OIDCJWKSURL       string
-	OIDCAudience      string
-	OIDCClientID      string
-	JWKSCacheTTL      time.Duration
-	HTTPClient        *http.Client
+	Mode                Mode
+	DevAdminToken       string
+	DevModeratorToken   string
+	OIDCIssuer          string
+	OIDCJWKSURL         string
+	OIDCAudience        string
+	OIDCClientID        string
+	JWKSCacheTTL        time.Duration
+	JWKSRefreshCooldown time.Duration
+	HTTPClient          *http.Client
 }
 
 type jwkKey struct {
@@ -63,15 +64,26 @@ type jwkSet struct {
 }
 
 type jwksCacheEntry struct {
-	fetchedAt time.Time
-	keys      map[string]*rsa.PublicKey
+	fetchedAt  time.Time
+	generation uint64
+	keys       map[string]*rsa.PublicKey
+}
+
+type jwksRefreshCall struct {
+	done       chan struct{}
+	keys       map[string]*rsa.PublicKey
+	err        error
+	generation uint64
 }
 
 type Service struct {
-	cfg        Config
-	httpClient *http.Client
-	mu         sync.RWMutex
-	cache      *jwksCacheEntry
+	cfg          Config
+	httpClient   *http.Client
+	mu           sync.Mutex
+	cache        *jwksCacheEntry
+	inFlight     *jwksRefreshCall
+	refreshGen   uint64
+	lastForcedAt time.Time
 }
 
 func NewService(cfg Config) *Service {
@@ -80,6 +92,12 @@ func NewService(cfg Config) *Service {
 		ttl = 5 * time.Minute
 	}
 	cfg.JWKSCacheTTL = ttl
+
+	cooldown := cfg.JWKSRefreshCooldown
+	if cooldown <= 0 {
+		cooldown = 15 * time.Second
+	}
+	cfg.JWKSRefreshCooldown = cooldown
 
 	client := cfg.HTTPClient
 	if client == nil {
@@ -189,18 +207,23 @@ func (s *Service) authenticateOIDC(ctx context.Context, authHeader string) (doma
 		if kid == "" {
 			return nil, domain.ErrUnauthorized
 		}
-		keys, err := s.getJWKSKeys(ctx, false)
+		keys, fromCache, err := s.getJWKSKeys(ctx, false)
 		if err != nil {
 			return nil, err
 		}
 		pubKey, ok := keys[kid]
 		if !ok {
-			// Unknown kid may indicate IdP key rotation; force a JWKS refresh once.
-			keys, err = s.getJWKSKeys(ctx, true)
-			if err != nil {
-				return nil, err
+			if fromCache {
+				// Unknown kid may indicate IdP key rotation; force a JWKS refresh (coalesced & cooldown-guarded).
+				keys, _, err = s.getJWKSKeys(ctx, true)
+				if err != nil {
+					return nil, err
+				}
+				pubKey, ok = keys[kid]
+			} else {
+				// Arm unknown-kid cooldown after a fresh fetch so immediate retries cannot hammer JWKS.
+				s.noteUnknownKidCooldown()
 			}
-			pubKey, ok = keys[kid]
 			if !ok {
 				return nil, domain.ErrUnauthorized
 			}
@@ -222,34 +245,97 @@ func (s *Service) authenticateOIDC(ctx context.Context, authHeader string) (doma
 	}, nil
 }
 
-func (s *Service) getJWKSKeys(ctx context.Context, forceRefresh bool) (map[string]*rsa.PublicKey, error) {
-	s.mu.RLock()
-	cached := s.cache
-	s.mu.RUnlock()
-
-	if !forceRefresh && cached != nil && time.Since(cached.fetchedAt) < s.cfg.JWKSCacheTTL {
-		return cached.keys, nil
-	}
-
-	// Perform outbound HTTP fetch without holding s.mu.Lock() so concurrent verifications aren't stalled.
-	parsed, err := s.fetchJWKS(ctx)
-	if err != nil {
-		s.mu.RLock()
-		fallback := s.cache
-		s.mu.RUnlock()
-		if fallback != nil && len(fallback.keys) > 0 {
-			return fallback.keys, nil
-		}
-		return nil, err
-	}
-
+func (s *Service) noteUnknownKidCooldown() {
 	s.mu.Lock()
-	s.cache = &jwksCacheEntry{
-		fetchedAt: time.Now(),
-		keys:      parsed,
+	if s.lastForcedAt.IsZero() || time.Since(s.lastForcedAt) >= s.cfg.JWKSRefreshCooldown {
+		s.lastForcedAt = time.Now()
 	}
 	s.mu.Unlock()
-	return parsed, nil
+}
+
+func (s *Service) getJWKSKeys(ctx context.Context, forceRefresh bool) (map[string]*rsa.PublicKey, bool, error) {
+	s.mu.Lock()
+	cached := s.cache
+	if !forceRefresh && cached != nil && time.Since(cached.fetchedAt) < s.cfg.JWKSCacheTTL {
+		keys := cached.keys
+		s.mu.Unlock()
+		return keys, true, nil
+	}
+
+	// Singleflight: coalesce concurrent TTL expirations or unknown-kid bursts into one HTTP fetch.
+	if s.inFlight != nil {
+		call := s.inFlight
+		s.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.keys, false, call.err
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+
+	if forceRefresh {
+		if !s.lastForcedAt.IsZero() && time.Since(s.lastForcedAt) < s.cfg.JWKSRefreshCooldown {
+			var keys map[string]*rsa.PublicKey
+			if cached != nil {
+				keys = cached.keys
+			}
+			s.mu.Unlock()
+			if keys != nil {
+				return keys, true, nil
+			}
+			return nil, true, domain.ErrUnauthorized
+		}
+		s.lastForcedAt = time.Now()
+	}
+
+	s.refreshGen++
+	gen := s.refreshGen
+	call := &jwksRefreshCall{
+		done:       make(chan struct{}),
+		generation: gen,
+	}
+	s.inFlight = call
+	s.mu.Unlock()
+
+	fetchTimeout := 10 * time.Second
+	if s.httpClient != nil && s.httpClient.Timeout > 0 {
+		fetchTimeout = s.httpClient.Timeout
+	}
+	fetchCtx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	// Perform outbound HTTP fetch without holding s.mu.Lock() so concurrent verifications aren't stalled.
+	parsed, fetchErr := s.fetchJWKS(fetchCtx)
+	cancel()
+
+	now := time.Now()
+	s.mu.Lock()
+	if s.inFlight == call {
+		s.inFlight = nil
+	}
+	if fetchErr != nil {
+		if s.cache != nil && len(s.cache.keys) > 0 {
+			call.keys = s.cache.keys
+			call.err = nil
+		} else {
+			call.err = fetchErr
+		}
+	} else {
+		if s.cache == nil || (gen > s.cache.generation && !now.Before(s.cache.fetchedAt)) {
+			s.cache = &jwksCacheEntry{
+				fetchedAt:  now,
+				generation: gen,
+				keys:       parsed,
+			}
+		}
+		call.keys = s.cache.keys
+	}
+	close(call.done)
+	s.mu.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, false, ctx.Err()
+	}
+	return call.keys, false, call.err
 }
 
 func (s *Service) fetchJWKS(ctx context.Context) (map[string]*rsa.PublicKey, error) {

@@ -2,6 +2,9 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import {
   ApiError,
   ModerationValidationError,
+  MODERATION_ACTION_LABELS,
+  MODERATION_ACTION_TEST_IDS,
+  formatIngestDeduplicatedStatus,
   fetchModerationCases,
   getAllowedActions,
   publishReport,
@@ -113,6 +116,28 @@ describe('getAllowedActions', () => {
     expect(getAllowedActions('REJECTED')).toEqual([])
     expect(getAllowedActions('PUBLISHED')).toEqual([])
     expect(getAllowedActions('UNKNOWN')).toEqual([])
+  })
+})
+
+describe('moderation Spanish action labels, testids & ingest deduplicated label', () => {
+  test('exposes Spanish moderation action labels and deterministic testids', () => {
+    expect(MODERATION_ACTION_LABELS).toEqual({
+      TRIAGE: 'Triaje',
+      VERIFY: 'Verificar',
+      REJECT: 'Rechazar',
+      PUBLISH: 'Publicar',
+    })
+    expect(MODERATION_ACTION_TEST_IDS).toEqual({
+      TRIAGE: 'case-action-triage',
+      VERIFY: 'case-action-verify',
+      REJECT: 'case-action-reject',
+      PUBLISH: 'case-action-publish',
+    })
+  })
+
+  test('formats ingest deduplicated badge text in Spanish', () => {
+    expect(formatIngestDeduplicatedStatus(true)).toBe('Deduplicado (idempotente)')
+    expect(formatIngestDeduplicatedStatus(false)).toBe('Ingesta nueva')
   })
 })
 

@@ -202,6 +202,7 @@ function AdminShell() {
           <div className="muni-select-wrap">
             <select
               id="admin-municipality-select"
+              data-testid="admin-municipality-select"
               value={municipality_id}
               onChange={(e) => handleMunicipalityChange(e.target.value)}
             >
@@ -253,6 +254,7 @@ function AdminShell() {
                 </label>
                 <input
                   id="bearer-token-input"
+                  data-testid="admin-token-input"
                   className="token-input"
                   type="password"
                   autoComplete="off"
@@ -263,12 +265,17 @@ function AdminShell() {
               </div>
 
               <div className="token-actions">
-                <button type="submit" className="btn btn-sm btn-primary">
+                <button
+                  type="submit"
+                  className="btn btn-sm btn-primary"
+                  data-testid="admin-token-apply"
+                >
                   Aplicar
                 </button>
                 <button
                   type="button"
                   className="btn btn-sm btn-ghost-dark"
+                  data-testid="admin-token-clear"
                   onClick={handleClearToken}
                 >
                   Limpiar
@@ -279,6 +286,8 @@ function AdminShell() {
             <span
               className={`token-status ${hasToken ? 'active' : 'inactive'}`}
               role="status"
+              data-testid="admin-auth-state"
+              data-state={hasToken ? 'authenticated' : 'unauthenticated'}
             >
               <span
                 className={`status-dot ${hasToken ? 'emerald' : 'amber'}`}

@@ -771,3 +771,259 @@ func TestIdempotentDemoIngest(t *testing.T) {
 		t.Fatalf("expected 3 total expense rows (no duplicates), got %d", len(store.expenses))
 	}
 }
+
+func TestAIDiscoveryEndpoints(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	h := srv.Handler()
+
+	// 1. GET /openapi.json
+	oaRec := doReq(t, h, http.MethodGet, "/openapi.json", nil, "")
+	if oaRec.Code != http.StatusOK {
+		t.Fatalf("GET /openapi.json failed: %d %s", oaRec.Code, oaRec.Body.String())
+	}
+	if ct := oaRec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("unexpected /openapi.json Content-Type: %q", ct)
+	}
+	var oa map[string]any
+	if err := json.Unmarshal(oaRec.Body.Bytes(), &oa); err != nil {
+		t.Fatalf("invalid /openapi.json: %v", err)
+	}
+	if oa["openapi"] != "3.1.0" {
+		t.Fatalf("expected openapi 3.1.0, got %v", oa["openapi"])
+	}
+	paths, ok := oa["paths"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing paths in openapi.json")
+	}
+	for _, expectedPath := range []string{
+		"/health",
+		"/public/datasets",
+		"/public/expenses",
+		"/public/reports",
+		"/public/reports/{id}",
+		"/reports",
+		"/reports/{id}/evidence",
+		"/reports/{id}/submit",
+		"/moderation/cases",
+		"/moderation/cases/{id}/triage",
+		"/moderation/cases/{id}/verify",
+		"/moderation/cases/{id}/reject",
+		"/moderation/reports/{id}/publish",
+		"/admin/ingest/demo",
+	} {
+		if _, exists := paths[expectedPath]; !exists {
+			t.Fatalf("openapi.json missing path %q", expectedPath)
+		}
+	}
+	if !strings.Contains(oaRec.Body.String(), "amount_cents") {
+		t.Fatalf("openapi.json must document integer amount_cents schema")
+	}
+	if !strings.Contains(oaRec.Body.String(), "BearerAuth") {
+		t.Fatalf("openapi.json must document BearerAuth security scheme")
+	}
+
+	// 2. GET /llms.txt
+	llmsRec := doReq(t, h, http.MethodGet, "/llms.txt", nil, "")
+	if llmsRec.Code != http.StatusOK {
+		t.Fatalf("GET /llms.txt failed: %d %s", llmsRec.Code, llmsRec.Body.String())
+	}
+	if ct := llmsRec.Header().Get("Content-Type"); !strings.Contains(ct, "text/plain") {
+		t.Fatalf("unexpected /llms.txt Content-Type: %q", ct)
+	}
+	llmsBody := llmsRec.Body.String()
+	for _, required := range []string{
+		"DRAFT", "SUBMITTED", "TRIAGED", "VERIFIED", "PUBLISHED", "REJECTED",
+		"amount_cents", "Idempotency-Key", "municipality_id", "/openapi.json",
+	} {
+		if !strings.Contains(llmsBody, required) {
+			t.Fatalf("/llms.txt missing %q", required)
+		}
+	}
+
+	// 3. GET /.well-known/agent.json
+	agentRec := doReq(t, h, http.MethodGet, "/.well-known/agent.json", nil, "")
+	if agentRec.Code != http.StatusOK {
+		t.Fatalf("GET /.well-known/agent.json failed: %d %s", agentRec.Code, agentRec.Body.String())
+	}
+	var agent map[string]any
+	if err := json.Unmarshal(agentRec.Body.Bytes(), &agent); err != nil {
+		t.Fatalf("invalid /.well-known/agent.json: %v", err)
+	}
+	for _, field := range []string{"name", "version", "openapi_url", "llms_txt_url", "auth_modes", "municipalities", "report_lifecycle", "idempotency_header"} {
+		if _, exists := agent[field]; !exists {
+			t.Fatalf("/.well-known/agent.json missing field %q", field)
+		}
+	}
+	if agent["idempotency_header"] != "Idempotency-Key" {
+		t.Fatalf("expected idempotency_header=Idempotency-Key, got %v", agent["idempotency_header"])
+	}
+}
+
+func TestCreateReportIdempotencyKeyDeduplication(t *testing.T) {
+	srv, store := setupTestServer(t)
+	h := srv.Handler()
+
+	sendWithKey := func(muni, key string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(map[string]string{
+			"municipality_id": muni,
+			"category":        "OBRAS",
+			"description":     "Obra inconclusa en av principal",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/reports", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if key != "" {
+			req.Header.Set("Idempotency-Key", key)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec1 := sendWithKey("lima", "agent-req-001")
+	if rec1.Code != http.StatusCreated {
+		t.Fatalf("first POST /reports failed: %d %s", rec1.Code, rec1.Body.String())
+	}
+	var r1 domain.Report
+	if err := json.Unmarshal(rec1.Body.Bytes(), &r1); err != nil {
+		t.Fatalf("unmarshal r1: %v", err)
+	}
+
+	// Retry with same municipality_id + Idempotency-Key returns same report without creating a duplicate.
+	rec2 := sendWithKey("lima", "agent-req-001")
+	if rec2.Code != http.StatusOK && rec2.Code != http.StatusCreated {
+		t.Fatalf("retry POST /reports failed: %d %s", rec2.Code, rec2.Body.String())
+	}
+	var r2 domain.Report
+	if err := json.Unmarshal(rec2.Body.Bytes(), &r2); err != nil {
+		t.Fatalf("unmarshal r2: %v", err)
+	}
+	if r2.ID != r1.ID {
+		t.Fatalf("idempotent retry returned different report ID: got %s, want %s", r2.ID, r1.ID)
+	}
+	if len(store.reports) != 1 || len(store.auditEvents) != 1 {
+		t.Fatalf("idempotent retry must not create duplicate report or audit event: reports=%d audits=%d", len(store.reports), len(store.auditEvents))
+	}
+
+	// Same Idempotency-Key in a different municipality is scoped independently.
+	rec3 := sendWithKey("cusco", "agent-req-001")
+	if rec3.Code != http.StatusCreated {
+		t.Fatalf("different municipality POST /reports failed: %d %s", rec3.Code, rec3.Body.String())
+	}
+	var r3 domain.Report
+	_ = json.Unmarshal(rec3.Body.Bytes(), &r3)
+	if r3.ID == r1.ID {
+		t.Fatalf("different municipality must not collide on idempotency key")
+	}
+	if len(store.reports) != 2 {
+		t.Fatalf("expected 2 reports across municipalities, got %d", len(store.reports))
+	}
+
+	// Preserve: without Idempotency-Key, repeated POST /reports creates distinct drafts.
+	noKey1 := sendWithKey("lima", "")
+	noKey2 := sendWithKey("lima", "")
+	if noKey1.Code != http.StatusCreated || noKey2.Code != http.StatusCreated {
+		t.Fatalf("POST /reports without key failed: %d / %d", noKey1.Code, noKey2.Code)
+	}
+	var nk1, nk2 domain.Report
+	_ = json.Unmarshal(noKey1.Body.Bytes(), &nk1)
+	_ = json.Unmarshal(noKey2.Body.Bytes(), &nk2)
+	if nk1.ID == nk2.ID {
+		t.Fatalf("POST /reports without Idempotency-Key must create distinct reports")
+	}
+}
+
+func TestStructuredMachineReadableErrorsAndAllowedActions(t *testing.T) {
+	srv, _ := setupTestServer(t)
+	h := srv.Handler()
+
+	// 1. Validation error includes code and retryable=false while preserving "error"
+	badRec := doReq(t, h, http.MethodPost, "/reports", map[string]string{
+		"category": "",
+	}, "")
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", badRec.Code)
+	}
+	var badErr struct {
+		Error     string `json:"error"`
+		Code      string `json:"code"`
+		Retryable bool   `json:"retryable"`
+	}
+	if err := json.Unmarshal(badErrBytes(badRec), &badErr); err != nil {
+		t.Fatalf("unmarshal bad error: %v", err)
+	}
+	if badErr.Error == "" || badErr.Code == "" || badErr.Retryable {
+		t.Fatalf("unexpected structured validation error: %#v", badErr)
+	}
+
+	// 2. Invalid transition from SUBMITTED -> VERIFY includes allowed_actions=["TRIAGE","REJECT"]
+	createRec := doReq(t, h, http.MethodPost, "/reports", map[string]string{
+		"category":    "SERVICIOS",
+		"description": "Error estructurado",
+	}, "")
+	var created domain.Report
+	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	_ = doReq(t, h, http.MethodPost, "/reports/"+created.ID.String()+"/submit", nil, "")
+
+	invalidVerify := doReq(t, h, http.MethodPost, "/moderation/cases/"+created.ID.String()+"/verify", map[string]string{
+		"reason": "skip triage",
+	}, testModToken)
+	if invalidVerify.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d", invalidVerify.Code)
+	}
+	var trErr struct {
+		Error          string   `json:"error"`
+		Code           string   `json:"code"`
+		Retryable      bool     `json:"retryable"`
+		AllowedActions []string `json:"allowed_actions"`
+	}
+	if err := json.Unmarshal(invalidVerify.Body.Bytes(), &trErr); err != nil {
+		t.Fatalf("unmarshal transition error: %v", err)
+	}
+	if trErr.Error == "" || trErr.Code != "INVALID_STATE_TRANSITION" || trErr.Retryable {
+		t.Fatalf("unexpected transition error fields: %#v", trErr)
+	}
+	if len(trErr.AllowedActions) != 2 || trErr.AllowedActions[0] != "TRIAGE" || trErr.AllowedActions[1] != "REJECT" {
+		t.Fatalf("expected allowed_actions [TRIAGE REJECT] from SUBMITTED, got %#v", trErr.AllowedActions)
+	}
+
+	// 3. Invalid transition from TRIAGED -> PUBLISH includes allowed_actions=["VERIFY","REJECT"]
+	_ = doReq(t, h, http.MethodPost, "/moderation/cases/"+created.ID.String()+"/triage", map[string]string{
+		"reason": "triage",
+	}, testModToken)
+	invalidPub := doReq(t, h, http.MethodPost, "/moderation/reports/"+created.ID.String()+"/publish", map[string]string{
+		"public_text": "nope",
+		"reason":      "skip verify",
+	}, testModToken)
+	if invalidPub.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d", invalidPub.Code)
+	}
+	var pubErr struct {
+		AllowedActions []string `json:"allowed_actions"`
+	}
+	_ = json.Unmarshal(invalidPub.Body.Bytes(), &pubErr)
+	if len(pubErr.AllowedActions) != 2 || pubErr.AllowedActions[0] != "VERIFY" || pubErr.AllowedActions[1] != "REJECT" {
+		t.Fatalf("expected allowed_actions [VERIFY REJECT] from TRIAGED, got %#v", pubErr.AllowedActions)
+	}
+
+	// 4. Invalid transition from VERIFIED -> TRIAGE includes allowed_actions=["PUBLISH"]
+	_ = doReq(t, h, http.MethodPost, "/moderation/cases/"+created.ID.String()+"/verify", map[string]string{
+		"reason": "verify",
+	}, testModToken)
+	invalidTriage := doReq(t, h, http.MethodPost, "/moderation/cases/"+created.ID.String()+"/triage", map[string]string{
+		"reason": "backwards",
+	}, testModToken)
+	if invalidTriage.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d", invalidTriage.Code)
+	}
+	var verErr struct {
+		AllowedActions []string `json:"allowed_actions"`
+	}
+	_ = json.Unmarshal(invalidTriage.Body.Bytes(), &verErr)
+	if len(verErr.AllowedActions) != 1 || verErr.AllowedActions[0] != "PUBLISH" {
+		t.Fatalf("expected allowed_actions [PUBLISH] from VERIFIED, got %#v", verErr.AllowedActions)
+	}
+}
+
+func badErrBytes(rec *httptest.ResponseRecorder) []byte {
+	return rec.Body.Bytes()
+}

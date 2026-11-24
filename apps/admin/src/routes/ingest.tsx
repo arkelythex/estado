@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { ApiError, type IngestResult } from '../lib/admin-api'
+import {
+  ApiError,
+  formatIngestDeduplicatedStatus,
+  type IngestResult,
+} from '../lib/admin-api'
 import { useAdminAuth } from '../lib/admin-auth'
 import { createScopeGuard, executeScopedDemoIngest } from '../lib/admin-workflow'
 import { getMunicipalityLabel } from '../lib/municipalities'
@@ -145,7 +149,7 @@ function IngestAdminPage() {
       </section>
 
       {!hasToken ? (
-        <div className="alert alert-warning" role="status">
+        <div className="alert alert-warning" role="status" aria-live="polite">
           <span className="alert-icon">
             <AlertIcon />
           </span>
@@ -172,6 +176,7 @@ function IngestAdminPage() {
           <button
             type="button"
             className="btn btn-primary"
+            data-testid="ingest-run-btn"
             onClick={() => void handleRunDemoIngest()}
             disabled={!hasToken || isRunning}
           >
@@ -182,7 +187,7 @@ function IngestAdminPage() {
       </section>
 
       {errorMessage ? (
-        <div className="alert alert-error" role="alert">
+        <div className="alert alert-error" role="alert" aria-live="polite">
           <span className="alert-icon">
             <AlertIcon />
           </span>
@@ -196,6 +201,7 @@ function IngestAdminPage() {
         <section
           className="card-elevated"
           aria-label="Resultado de la última ingesta"
+          aria-live="polite"
         >
           <div className="card-header">
             <div>
@@ -203,15 +209,15 @@ function IngestAdminPage() {
               <h2>Resultado de Ingesta</h2>
             </div>
             <span
+              data-testid="ingest-deduplicated"
+              data-deduplicated={String(latestResult.deduplicated)}
               className={
                 latestResult.deduplicated
                   ? 'badge badge-published'
                   : 'badge badge-submitted'
               }
             >
-              {latestResult.deduplicated
-                ? 'deduplicated: true (idempotente)'
-                : 'Ingesta nueva registrada'}
+              {formatIngestDeduplicatedStatus(latestResult.deduplicated)}
             </span>
           </div>
 
@@ -254,7 +260,9 @@ function IngestAdminPage() {
             </span>
             <div>
               <div className="kv-label">checksum_sha256</div>
-              <div className="kv-value mono">{latestResult.checksum_sha256}</div>
+              <div className="kv-value mono" data-testid="ingest-checksum">
+                {latestResult.checksum_sha256}
+              </div>
             </div>
           </div>
         </section>
@@ -297,7 +305,7 @@ function IngestAdminPage() {
                             : 'badge badge-submitted'
                         }
                       >
-                        {entry.deduplicated ? 'Deduplicated' : 'Ingestado'}
+                        {formatIngestDeduplicatedStatus(entry.deduplicated)}
                       </span>
                     </td>
                   </tr>

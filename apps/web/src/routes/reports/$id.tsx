@@ -69,7 +69,7 @@ function PublishedReportDetailPage() {
       ) : null}
 
       {report ? (
-        <>
+        <div data-testid="public-report-detail">
           <section className="card">
             <div className="report-item-header">
               <div className="actions-row">
@@ -92,7 +92,10 @@ function PublishedReportDetailPage() {
           <section className="card">
             <div className="card-header-row">
               <h2 className="section-label">EVIDENCIA VERIFICADA</h2>
-              <span className="badge badge-neutral">
+              <span
+                className="badge badge-neutral"
+                data-testid="public-evidence-count"
+              >
                 {report.evidence_count} {report.evidence_count === 1 ? 'archivo' : 'archivos'}
               </span>
             </div>
@@ -110,7 +113,7 @@ function PublishedReportDetailPage() {
               </div>
             )}
           </section>
-        </>
+        </div>
       ) : null}
     </div>
   )

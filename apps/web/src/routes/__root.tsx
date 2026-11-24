@@ -321,6 +321,7 @@ function RootComponent() {
             <div className="muni-pill-wrap">
               <select
                 id="municipality-select"
+                data-testid="municipality-select"
                 className="muni-select"
                 value={municipality_id}
                 onChange={(e) => handleMunicipalityChange(e.target.value)}
@@ -377,6 +378,7 @@ function RootComponent() {
               <input
                 ref={desktopSearchRef}
                 type="search"
+                data-testid="topbar-search-input"
                 className="topbar-search-input"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -420,7 +422,10 @@ function RootComponent() {
                 <SearchIcon size={16} />
               </button>
 
-              <span className="live-sync-pill topbar-desktop-only">
+              <span
+                className="live-sync-pill topbar-desktop-only"
+                data-testid="live-sync-badge"
+              >
                 <span className="status-dot" aria-hidden="true" />
                 LIVE SYNC
               </span>
@@ -429,6 +434,7 @@ function RootComponent() {
                 to="/report"
                 search={{ municipality_id }}
                 className="btn btn-primary topbar-desktop-only"
+                data-testid="cta-new-report"
               >
                 <PlusIcon size={15} />
                 Nuevo Reporte
@@ -473,7 +479,11 @@ function RootComponent() {
           </footer>
         </div>
 
-        <nav className="mobile-bottom-nav" aria-label="Navegación móvil">
+        <nav
+          className="mobile-bottom-nav"
+          aria-label="Navegación móvil"
+          data-testid="mobile-bottom-nav"
+        >
           <Link
             to="/"
             search={{ municipality_id }}

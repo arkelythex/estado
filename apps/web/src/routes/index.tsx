@@ -75,7 +75,7 @@ function HomePage() {
       </section>
 
       <section className="grid-3" aria-label="Indicadores de transparencia">
-        <div className="stat-card">
+        <div className="stat-card" data-testid="kpi-datasets">
           <div className="stat-card-top">
             <span className="stat-icon-badge" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -100,7 +100,7 @@ function HomePage() {
           </div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card" data-testid="kpi-versions">
           <div className="stat-card-top">
             <span className="stat-icon-badge" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -133,7 +133,7 @@ function HomePage() {
           </div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card" data-testid="kpi-integrity">
           <div className="stat-card-top">
             <span className="stat-icon-badge" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
@@ -250,7 +250,11 @@ function HomePage() {
           ) : (
             <div className="dataset-cards-grid">
               {datasets.map((dataset) => (
-                <div key={dataset.id} className="dataset-card">
+                <div
+                  key={dataset.id}
+                  className="dataset-card"
+                  data-testid="dataset-card"
+                >
                   <div className="dataset-preview">
                     <span className="dataset-preview-badge">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

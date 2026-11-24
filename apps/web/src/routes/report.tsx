@@ -248,19 +248,31 @@ function NewReportPage() {
       </div>
 
       {errorMessage ? (
-        <div className="alert alert-error" role="alert">
+        <div
+          className="alert alert-error"
+          role="alert"
+          aria-live="polite"
+          data-testid="report-status-alert"
+        >
           {errorMessage}
         </div>
-      ) : null}
-
-      {statusMessage ? (
-        <div className="alert alert-info" role="status">
+      ) : statusMessage ? (
+        <div
+          className="alert alert-info"
+          role="status"
+          aria-live="polite"
+          data-testid="report-status-alert"
+        >
           {statusMessage}
         </div>
       ) : null}
 
       {step === 1 ? (
-        <section className="card">
+        <section
+          className="card"
+          data-testid="report-step"
+          data-step={step}
+        >
           <div className="card-header-row">
             <h2>Paso 1: Descripción del Reporte</h2>
             <span className="badge badge-neutral">BORRADOR</span>
@@ -284,6 +296,7 @@ function NewReportPage() {
                 <label htmlFor="report-category">Categoría</label>
                 <select
                   id="report-category"
+                  data-testid="report-category"
                   value={category}
                   onChange={(e) => setCategory(e.target.value)}
                 >
@@ -300,6 +313,7 @@ function NewReportPage() {
               <label htmlFor="report-description">Descripción</label>
               <textarea
                 id="report-description"
+                data-testid="report-description"
                 rows={5}
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
@@ -312,7 +326,12 @@ function NewReportPage() {
             </div>
 
             <div className="actions-row">
-              <button type="submit" className="btn btn-primary" disabled={isBusy}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isBusy}
+                data-testid="report-create-btn"
+              >
                 {isBusy ? 'Creando borrador...' : 'Crear borrador y continuar'}
               </button>
             </div>
@@ -321,7 +340,11 @@ function NewReportPage() {
       ) : null}
 
       {step === 2 && draftReport ? (
-        <section className="card">
+        <section
+          className="card"
+          data-testid="report-step"
+          data-step={step}
+        >
           <div className="card-header-row">
             <h2>Paso 2: Adjuntar Evidencia (Opcional)</h2>
             <span className="badge">{draftReport.status}</span>
@@ -403,6 +426,7 @@ function NewReportPage() {
               className="btn btn-primary"
               onClick={() => setStep(3)}
               disabled={isBusy}
+              data-testid="report-continue-btn"
             >
               Continuar al envío
             </button>
@@ -411,7 +435,11 @@ function NewReportPage() {
       ) : null}
 
       {step === 3 && draftReport ? (
-        <section className="card">
+        <section
+          className="card"
+          data-testid="report-step"
+          data-step={step}
+        >
           <div className="card-header-row">
             <h2>Paso 3: Confirmar y Enviar Reporte</h2>
             <span className="badge badge-warning">REVISIÓN FINAL</span>
@@ -459,6 +487,7 @@ function NewReportPage() {
               className="btn btn-primary"
               onClick={() => void handleSubmitReport()}
               disabled={isBusy}
+              data-testid="report-submit-btn"
             >
               {isBusy ? 'Enviando...' : 'Enviar reporte'}
             </button>
@@ -467,7 +496,11 @@ function NewReportPage() {
       ) : null}
 
       {step === 4 && submittedReport ? (
-        <section className="card">
+        <section
+          className="card"
+          data-testid="report-step"
+          data-step={step}
+        >
           <div className="alert alert-success">
             <strong>¡Reporte enviado correctamente!</strong> Tu reporte pasó al estado{' '}
             <span className="badge badge-success">{submittedReport.status}</span>.
