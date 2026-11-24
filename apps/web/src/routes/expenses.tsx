@@ -140,6 +140,7 @@ function ExpensesPage() {
     <div>
       <section className="page-header">
         <div>
+          <span className="page-eyebrow">Ledger Fiscal · {muniLabel}</span>
           <h1>Explorador de Gastos — {muniLabel}</h1>
           <p className="page-subtitle">
             Consulta los egresos municipales filtrando por entidad, categoría o rango de fechas.
@@ -147,19 +148,65 @@ function ExpensesPage() {
         </div>
       </section>
 
-      <section className="grid-2">
+      <section className="grid-2" aria-label="Resumen de gastos">
         <div className="stat-card">
-          <div className="stat-label">Registros encontrados</div>
-          <div className="stat-value">{expenses.length}</div>
+          <div className="stat-card-top">
+            <span className="stat-icon-badge" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 6h13" />
+                <path d="M8 12h13" />
+                <path d="M8 18h13" />
+                <path d="M3 6h.01" />
+                <path d="M3 12h.01" />
+                <path d="M3 18h.01" />
+              </svg>
+            </span>
+            <span className="stat-pill">{muniLabel}</span>
+          </div>
+          <div>
+            <div className="stat-label">Registros encontrados</div>
+            <div className="stat-value">{expenses.length}</div>
+          </div>
+          <div className="segmented-bars" aria-hidden="true">
+            {[1, 2, 3, 4].map((slot) => (
+              <span
+                key={slot}
+                className={`segmented-bar ${expenses.length > 0 ? 'filled' : ''}`}
+              />
+            ))}
+          </div>
         </div>
+
         <div className="stat-card">
-          <div className="stat-label">Monto total (exacto)</div>
-          <div className="stat-value">{formattedTotal}</div>
+          <div className="stat-card-top">
+            <span className="stat-icon-badge" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="6" width="20" height="12" rx="2" />
+                <circle cx="12" cy="12" r="2" />
+                <path d="M6 12h.01M18 12h.01" />
+              </svg>
+            </span>
+            <span className="stat-pill stat-pill-accent">EXACT PEN</span>
+          </div>
+          <div>
+            <div className="stat-label">Monto total (exacto)</div>
+            <div className="stat-value stat-value-accent mono" style={{ fontSize: '1.75rem' }}>
+              {formattedTotal}
+            </div>
+          </div>
+          <div className="segmented-bars" aria-hidden="true">
+            {[1, 2, 3, 4].map((slot) => (
+              <span key={slot} className="segmented-bar filled-accent" />
+            ))}
+          </div>
         </div>
       </section>
 
       <section className="card">
-        <h2>Filtros</h2>
+        <div className="card-header-row">
+          <h2 className="section-label">FILTROS DE BÚSQUEDA</h2>
+          <span className="field-hint">Aritmética exacta BigInt en céntimos</span>
+        </div>
         <form onSubmit={handleApplyFilters} className="filter-grid">
           <div className="field">
             <label htmlFor="filter-entity">Entidad</label>
@@ -225,7 +272,10 @@ function ExpensesPage() {
       ) : null}
 
       <section className="card">
-        <h2>Detalle de Gastos</h2>
+        <div className="card-header-row">
+          <h2 className="section-label">DETALLE DE GASTOS</h2>
+          <span className="badge badge-neutral">{expenses.length} partidas</span>
+        </div>
         {expenses.length === 0 && !errorMessage ? (
           <div className="empty-state">
             No se encontraron gastos con los filtros actuales para {muniLabel}.
@@ -245,12 +295,18 @@ function ExpensesPage() {
               <tbody>
                 {expenses.map((expense) => (
                   <tr key={expense.id}>
-                    <td>{expense.entity}</td>
+                    <td style={{ fontWeight: 500, color: '#ffffff' }}>
+                      {expense.entity}
+                    </td>
                     <td>
                       <span className="badge">{expense.category}</span>
                     </td>
-                    <td>{expense.occurred_on ?? '—'}</td>
-                    <td className="mono">{expense.doc_ref ?? '—'}</td>
+                    <td className="mono" style={{ color: 'var(--text-muted)' }}>
+                      {expense.occurred_on ?? '—'}
+                    </td>
+                    <td className="mono" style={{ color: 'var(--text-muted)' }}>
+                      {expense.doc_ref ?? '—'}
+                    </td>
                     <td className="amount-cell">
                       {formatCentsPEN(expense.amount_cents)}
                     </td>
@@ -262,7 +318,9 @@ function ExpensesPage() {
                   <th colSpan={4} style={{ textAlign: 'right' }}>
                     Total
                   </th>
-                  <th className="amount-cell">{formattedTotal}</th>
+                  <th className="amount-cell" style={{ color: 'var(--accent)' }}>
+                    {formattedTotal}
+                  </th>
                 </tr>
               </tfoot>
             </table>

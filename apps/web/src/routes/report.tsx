@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { ApiError, createReport, type Report } from '../lib/api'
 import { getMunicipalityLabel } from '../lib/municipalities'
@@ -34,6 +34,7 @@ function NewReportPage() {
   const [draftReport, setDraftReport] = useState<Report | null>(null)
   const [submittedReport, setSubmittedReport] = useState<Report | null>(null)
 
+  const scopeGenRef = useRef(0)
   const hashGuardRef = useRef(createHashSequenceGuard())
   const [readyEvidence, setReadyEvidence] = useState<ReadyEvidence | null>(null)
   const [uploadedEvidence, setUploadedEvidence] = useState<UploadedEvidenceItem[]>([])
@@ -41,6 +42,23 @@ function NewReportPage() {
   const [isBusy, setIsBusy] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  useEffect(() => {
+    scopeGenRef.current += 1
+    hashGuardRef.current.invalidate()
+    setStep(1)
+    setDraftReport(null)
+    setSubmittedReport(null)
+    setReadyEvidence(null)
+    setUploadedEvidence([])
+    setIsBusy(false)
+    setStatusMessage(null)
+    setErrorMessage(null)
+    return () => {
+      scopeGenRef.current += 1
+      hashGuardRef.current.invalidate()
+    }
+  }, [municipality_id])
 
   const handleCreateDraft = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -53,6 +71,7 @@ function NewReportPage() {
       return
     }
 
+    const startScope = scopeGenRef.current
     setIsBusy(true)
     try {
       const created = await createReport({
@@ -60,17 +79,25 @@ function NewReportPage() {
         category: category.trim(),
         description: trimmedDesc,
       })
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       setDraftReport(created)
       setStatusMessage(`Borrador creado (${created.id}). Puedes adjuntar evidencia o continuar al envío.`)
       setStep(2)
     } catch (err: unknown) {
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       setErrorMessage(
         err instanceof ApiError
           ? err.message
           : 'No se pudo crear el borrador del reporte.',
       )
     } finally {
-      setIsBusy(false)
+      if (startScope === scopeGenRef.current) {
+        setIsBusy(false)
+      }
     }
   }
 
@@ -85,14 +112,21 @@ function NewReportPage() {
       return
     }
 
+    const startScope = scopeGenRef.current
     try {
       const outcome = await prepareEvidenceWithGuard(file, hashGuardRef.current)
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       if (outcome.status === 'invalid') {
         setErrorMessage(outcome.error)
       } else if (outcome.status === 'ready') {
         setReadyEvidence(outcome.evidence)
       }
     } catch {
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       setErrorMessage('No se pudo calcular el SHA-256 en el navegador.')
     }
   }
@@ -101,24 +135,33 @@ function NewReportPage() {
     if (!draftReport || !readyEvidence) {
       return
     }
+    const startScope = scopeGenRef.current
     setErrorMessage(null)
     setStatusMessage(null)
     setIsBusy(true)
 
     try {
       const uploaded = await executeEvidenceUpload(draftReport, readyEvidence)
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       setUploadedEvidence((prev) => [...prev, uploaded])
       hashGuardRef.current.invalidate()
       setReadyEvidence(null)
       setStatusMessage('Evidencia subida y registrada correctamente.')
     } catch (err: unknown) {
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       setErrorMessage(
         err instanceof ApiError
           ? err.message
           : 'Error al subir la evidencia.',
       )
     } finally {
-      setIsBusy(false)
+      if (startScope === scopeGenRef.current) {
+        setIsBusy(false)
+      }
     }
   }
 
@@ -126,23 +169,32 @@ function NewReportPage() {
     if (!draftReport) {
       return
     }
+    const startScope = scopeGenRef.current
     setErrorMessage(null)
     setStatusMessage(null)
     setIsBusy(true)
 
     try {
       const submitted = await executeReportSubmission(draftReport)
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       setSubmittedReport(submitted)
       setStep(4)
       setStatusMessage('Tu reporte ha sido enviado a la cola de moderación.')
     } catch (err: unknown) {
+      if (startScope !== scopeGenRef.current) {
+        return
+      }
       setErrorMessage(
         err instanceof ApiError
           ? err.message
           : 'No se pudo enviar el reporte.',
       )
     } finally {
-      setIsBusy(false)
+      if (startScope === scopeGenRef.current) {
+        setIsBusy(false)
+      }
     }
   }
 
@@ -163,6 +215,7 @@ function NewReportPage() {
     <div>
       <section className="page-header">
         <div>
+          <span className="page-eyebrow">Canal Ciudadano Seguro · {muniLabel}</span>
           <h1>Nuevo Reporte Ciudadano — {muniLabel}</h1>
           <p className="page-subtitle">
             Crea un borrador anónimo, adjunta evidencia opcional con huella SHA-256 y envía el reporte a revisión.
@@ -172,16 +225,25 @@ function NewReportPage() {
 
       <div className="stepper" aria-label="Progreso del reporte">
         <div className={`step-item ${step === 1 ? 'active' : step > 1 ? 'done' : ''}`}>
-          <div className="step-num">Paso 1</div>
-          <div className="step-title">Crear borrador</div>
+          <span className="step-badge-num" aria-hidden="true">01</span>
+          <div>
+            <div className="step-num">Paso 1</div>
+            <div className="step-title">Crear borrador</div>
+          </div>
         </div>
         <div className={`step-item ${step === 2 ? 'active' : step > 2 ? 'done' : ''}`}>
-          <div className="step-num">Paso 2</div>
-          <div className="step-title">Evidencia (opcional)</div>
+          <span className="step-badge-num" aria-hidden="true">02</span>
+          <div>
+            <div className="step-num">Paso 2</div>
+            <div className="step-title">Evidencia (opcional)</div>
+          </div>
         </div>
         <div className={`step-item ${step === 3 ? 'active' : step > 3 ? 'done' : ''}`}>
-          <div className="step-num">Paso 3</div>
-          <div className="step-title">Enviar reporte</div>
+          <span className="step-badge-num" aria-hidden="true">03</span>
+          <div>
+            <div className="step-num">Paso 3</div>
+            <div className="step-title">Enviar reporte</div>
+          </div>
         </div>
       </div>
 
@@ -199,37 +261,42 @@ function NewReportPage() {
 
       {step === 1 ? (
         <section className="card">
-          <h2>Paso 1: Descripción del Reporte</h2>
+          <div className="card-header-row">
+            <h2>Paso 1: Descripción del Reporte</h2>
+            <span className="badge badge-neutral">BORRADOR</span>
+          </div>
           <form onSubmit={handleCreateDraft}>
-            <div className="field" style={{ marginBottom: '1rem' }}>
-              <label htmlFor="report-muni">Municipalidad</label>
-              <input
-                id="report-muni"
-                type="text"
-                value={muniLabel}
-                disabled
-              />
-              <span className="field-hint">
-                Cambia la municipalidad desde el selector en la barra superior si corresponde.
-              </span>
+            <div className="grid-2" style={{ marginBottom: '1rem' }}>
+              <div className="field">
+                <label htmlFor="report-muni">Municipalidad</label>
+                <input
+                  id="report-muni"
+                  type="text"
+                  value={muniLabel}
+                  disabled
+                />
+                <span className="field-hint">
+                  Cambia la municipalidad desde el selector lateral o superior si corresponde.
+                </span>
+              </div>
+
+              <div className="field">
+                <label htmlFor="report-category">Categoría</label>
+                <select
+                  id="report-category"
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                >
+                  {REPORT_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
-            <div className="field" style={{ marginBottom: '1rem' }}>
-              <label htmlFor="report-category">Categoría</label>
-              <select
-                id="report-category"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-              >
-                {REPORT_CATEGORIES.map((cat) => (
-                  <option key={cat} value={cat}>
-                    {cat}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="field" style={{ marginBottom: '1rem' }}>
+            <div className="field" style={{ marginBottom: '1.25rem' }}>
               <label htmlFor="report-description">Descripción</label>
               <textarea
                 id="report-description"
@@ -255,13 +322,15 @@ function NewReportPage() {
 
       {step === 2 && draftReport ? (
         <section className="card">
-          <h2>Paso 2: Adjuntar Evidencia (Opcional)</h2>
-          <p className="page-subtitle" style={{ marginBottom: '1rem' }}>
-            Borrador <span className="mono">{draftReport.id}</span> en estado{' '}
-            <span className="badge">{draftReport.status}</span>.
+          <div className="card-header-row">
+            <h2>Paso 2: Adjuntar Evidencia (Opcional)</h2>
+            <span className="badge">{draftReport.status}</span>
+          </div>
+          <p className="page-subtitle" style={{ marginBottom: '1.15rem' }}>
+            Borrador <span className="mono">{draftReport.id}</span> listo para recibir respaldos criptográficos.
           </p>
 
-          <div className="field" style={{ marginBottom: '1rem' }}>
+          <div className="field file-dropzone" style={{ marginBottom: '1.1rem' }}>
             <label htmlFor="evidence-file">Archivo de respaldo</label>
             <input
               id="evidence-file"
@@ -280,10 +349,10 @@ function NewReportPage() {
               <div>
                 <strong>Archivo listo:</strong> {readyEvidence.file.name} ({readyEvidence.file.size} bytes)
               </div>
-              <div className="mono" style={{ marginTop: '0.25rem' }}>
+              <div className="mono" style={{ marginTop: '0.35rem', color: 'var(--accent)' }}>
                 SHA-256: {readyEvidence.sha256}
               </div>
-              <div className="actions-row" style={{ marginTop: '0.75rem' }}>
+              <div className="actions-row" style={{ marginTop: '0.85rem' }}>
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -297,8 +366,10 @@ function NewReportPage() {
           ) : null}
 
           {uploadedEvidence.length > 0 ? (
-            <div style={{ marginBottom: '1rem' }}>
-              <h3>Evidencia adjunta ({uploadedEvidence.length})</h3>
+            <div style={{ marginBottom: '1.25rem' }}>
+              <h3 className="section-label" style={{ marginBottom: '0.65rem' }}>
+                EVIDENCIA ADJUNTA ({uploadedEvidence.length})
+              </h3>
               <div className="table-wrap">
                 <table>
                   <thead>
@@ -311,9 +382,13 @@ function NewReportPage() {
                   <tbody>
                     {uploadedEvidence.map((item) => (
                       <tr key={item.evidenceId}>
-                        <td>{item.fileName}</td>
-                        <td>{item.contentType}</td>
-                        <td className="mono">{item.sha256}</td>
+                        <td style={{ color: '#ffffff', fontWeight: 500 }}>{item.fileName}</td>
+                        <td>
+                          <span className="badge badge-neutral">{item.contentType}</span>
+                        </td>
+                        <td className="mono" style={{ color: 'var(--emerald-text)' }}>
+                          {item.sha256}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -337,39 +412,40 @@ function NewReportPage() {
 
       {step === 3 && draftReport ? (
         <section className="card">
-          <h2>Paso 3: Confirmar y Enviar Reporte</h2>
-          <p className="page-subtitle" style={{ marginBottom: '1rem' }}>
+          <div className="card-header-row">
+            <h2>Paso 3: Confirmar y Enviar Reporte</h2>
+            <span className="badge badge-warning">REVISIÓN FINAL</span>
+          </div>
+          <p className="page-subtitle" style={{ marginBottom: '1.15rem' }}>
             Revisa los datos antes de enviar el reporte a moderación. Una vez enviado, la evidencia adjunta es inmutable.
           </p>
 
-          <dl>
-            <dt>
-              <strong>ID de borrador</strong>
-            </dt>
-            <dd className="mono" style={{ marginBottom: '0.6rem' }}>
-              {draftReport.id}
-            </dd>
-            <dt>
-              <strong>Municipalidad</strong>
-            </dt>
-            <dd style={{ marginBottom: '0.6rem' }}>
-              {getMunicipalityLabel(draftReport.municipality_id)}
-            </dd>
-            <dt>
-              <strong>Categoría</strong>
-            </dt>
-            <dd style={{ marginBottom: '0.6rem' }}>{draftReport.category}</dd>
-            <dt>
-              <strong>Descripción</strong>
-            </dt>
-            <dd style={{ marginBottom: '0.6rem' }}>{draftReport.description}</dd>
-            <dt>
-              <strong>Evidencia adjunta</strong>
-            </dt>
-            <dd>{uploadedEvidence.length} archivo(s)</dd>
+          <dl className="summary-dl">
+            <div>
+              <dt>ID de borrador</dt>
+              <dd className="mono">{draftReport.id}</dd>
+            </div>
+            <div>
+              <dt>Municipalidad</dt>
+              <dd>{getMunicipalityLabel(draftReport.municipality_id)}</dd>
+            </div>
+            <div>
+              <dt>Categoría</dt>
+              <dd>
+                <span className="badge">{draftReport.category}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Evidencia adjunta</dt>
+              <dd>{uploadedEvidence.length} archivo(s)</dd>
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <dt>Descripción</dt>
+              <dd style={{ lineHeight: 1.55 }}>{draftReport.description}</dd>
+            </div>
           </dl>
 
-          <div className="actions-row" style={{ marginTop: '1rem' }}>
+          <div className="actions-row" style={{ marginTop: '1.25rem' }}>
             <button
               type="button"
               className="btn btn-secondary"
@@ -397,21 +473,26 @@ function NewReportPage() {
             <span className="badge badge-success">{submittedReport.status}</span>.
           </div>
 
-          <p>
-            <strong>Código de seguimiento:</strong>{' '}
-            <span className="mono">{submittedReport.id}</span>
-          </p>
-          <p>
-            <strong>Municipalidad:</strong> {getMunicipalityLabel(submittedReport.municipality_id)}
-          </p>
-          <p>
-            <strong>Categoría:</strong> {submittedReport.category}
-          </p>
-          <p>
-            <strong>Evidencia adjunta:</strong> {uploadedEvidence.length} archivo(s)
-          </p>
+          <dl className="summary-dl" style={{ marginBottom: '1.25rem' }}>
+            <div>
+              <dt>Código de seguimiento</dt>
+              <dd className="mono">{submittedReport.id}</dd>
+            </div>
+            <div>
+              <dt>Municipalidad</dt>
+              <dd>{getMunicipalityLabel(submittedReport.municipality_id)}</dd>
+            </div>
+            <div>
+              <dt>Categoría</dt>
+              <dd>{submittedReport.category}</dd>
+            </div>
+            <div>
+              <dt>Evidencia adjunta</dt>
+              <dd>{uploadedEvidence.length} archivo(s)</dd>
+            </div>
+          </dl>
 
-          <div className="actions-row" style={{ marginTop: '1rem' }}>
+          <div className="actions-row">
             <button type="button" className="btn btn-primary" onClick={handleReset}>
               Crear otro reporte
             </button>

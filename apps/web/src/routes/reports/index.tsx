@@ -47,6 +47,7 @@ function PublishedReportsPage() {
     <div>
       <section className="page-header">
         <div>
+          <span className="page-eyebrow">Registro Público · {muniLabel}</span>
           <h1>Reportes Públicos Verificados — {muniLabel}</h1>
           <p className="page-subtitle">
             Publicaciones verificadas y redactadas sin datos personales sensibles.
@@ -57,7 +58,7 @@ function PublishedReportsPage() {
           search={{ municipality_id: municipalityId }}
           className="btn btn-primary"
         >
-          Nuevo Reporte
+          + Nuevo Reporte
         </Link>
       </section>
 
@@ -74,20 +75,23 @@ function PublishedReportsPage() {
           </div>
         </section>
       ) : (
-        <section className="report-list">
+        <section className="report-list" aria-label="Listado de reportes públicos">
           {reports.map((report) => (
             <article key={report.id} className="report-item">
               <div className="report-item-header">
                 <div className="actions-row">
                   <span className="badge">{report.category}</span>
-                  <span className="badge badge-success">{report.status}</span>
+                  <span className="badge badge-success">
+                    <span className="status-dot" aria-hidden="true" />
+                    {report.status}
+                  </span>
                 </div>
-                <span className="field-hint">
+                <span className="field-hint mono">
                   Publicado: {report.published_at.slice(0, 10)}
                 </span>
               </div>
 
-              <p style={{ margin: '0.5rem 0 0.85rem' }}>{report.public_text}</p>
+              <p className="report-text">{report.public_text}</p>
 
               <div className="actions-row">
                 <Link
@@ -96,7 +100,7 @@ function PublishedReportsPage() {
                   search={{ municipality_id: municipalityId }}
                   className="btn btn-secondary"
                 >
-                  Ver detalle y evidencia
+                  Ver detalle y evidencia →
                 </Link>
               </div>
             </article>

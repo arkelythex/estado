@@ -47,6 +47,7 @@ function PublishedReportDetailPage() {
     <div>
       <section className="page-header">
         <div>
+          <span className="page-eyebrow">Expediente Público · {muniLabel}</span>
           <h1>Detalle de Reporte Público — {muniLabel}</h1>
           <p className="page-subtitle">
             Información verificada y cadena de evidencia inmutable.
@@ -57,7 +58,7 @@ function PublishedReportDetailPage() {
           search={{ municipality_id: municipalityId }}
           className="btn btn-secondary"
         >
-          Volver a Reportes Públicos
+          ← Volver a Reportes Públicos
         </Link>
       </section>
 
@@ -73,26 +74,34 @@ function PublishedReportDetailPage() {
             <div className="report-item-header">
               <div className="actions-row">
                 <span className="badge">{report.category}</span>
-                <span className="badge badge-success">{report.status}</span>
+                <span className="badge badge-success">
+                  <span className="status-dot" aria-hidden="true" />
+                  {report.status}
+                </span>
               </div>
-              <span className="field-hint">
+              <span className="field-hint mono">
                 Publicado: {report.published_at.slice(0, 10)}
               </span>
             </div>
 
-            <p style={{ fontSize: '1.02rem', marginTop: '0.75rem' }}>
+            <p className="report-text" style={{ fontSize: '1.02rem', marginTop: '0.85rem', marginBottom: 0 }}>
               {report.public_text}
             </p>
           </section>
 
           <section className="card">
-            <h2>Evidencia Verificada</h2>
+            <div className="card-header-row">
+              <h2 className="section-label">EVIDENCIA VERIFICADA</h2>
+              <span className="badge badge-neutral">
+                {report.evidence_count} {report.evidence_count === 1 ? 'archivo' : 'archivos'}
+              </span>
+            </div>
             {report.evidence_count === 0 ? (
               <div className="empty-state">
                 Este reporte público no tiene archivos de evidencia adjuntos.
               </div>
             ) : (
-              <div className="alert alert-info">
+              <div className="alert alert-info" style={{ marginBottom: 0 }}>
                 Este reporte cuenta con{' '}
                 <strong>{report.evidence_count}</strong> archivo(s) de evidencia
                 resguardados en custodia inmutable. Los identificadores internos y
