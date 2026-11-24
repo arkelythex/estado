@@ -38,7 +38,9 @@ jobs:
             echo "POSTGRES_PASSWORD=$pg_pass"
             echo "DATABASE_URL=postgres://postgres:${pg_pass}@localhost:5432/civictech"
             echo "MINIO_ROOT_PASSWORD=$minio_pass"
-            echo "MINIO_KMS_SECRET_KEY=$minio_kms"
+            rustfs_key="$(openssl rand -base64 32)"
+            echo "::add-mask::$rustfs_key" >&2
+            echo "RUSTFS_SSE_S3_MASTER_KEY=$rustfs_key"
             echo "KEYCLOAK_DB_PASSWORD=$kc_db_pass"
             echo "KEYCLOAK_ADMIN_PASSWORD=$kc_admin_pass"
             echo "GF_SECURITY_ADMIN_PASSWORD=$gf_pass"
@@ -64,7 +66,8 @@ jobs:
 
       - name: Start infra services
         run: |
-          docker compose -f infra/docker-compose.yml up -d postgres minio minio-init prometheus grafana
+          docker compose -f infra/docker-compose.yml up -d postgres minio prometheus grafana
+          docker compose -f infra/docker-compose.yml run --rm minio-init
 
       - name: Validate observability assets
         run: bash ./scripts/validate-observability-assets.sh
