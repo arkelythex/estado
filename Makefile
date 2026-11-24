@@ -19,4 +19,4 @@ smoke:
 	bash ./scripts/smoke-e2e.sh
 
 quality:
-	pnpm quality:check
+	bun run quality:check

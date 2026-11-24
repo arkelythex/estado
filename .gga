@@ -8,7 +8,7 @@ PROVIDER="codex"
 FILE_PATTERNS="*.rs,*.ts,*.tsx,*.js,*.jsx,*.mjs,*.cjs,*.yml,*.yaml,*.json,*.toml,*.sh,*.md"
 
 # Patterns to exclude
-EXCLUDE_PATTERNS="*.test.rs,*.spec.ts,*.test.ts,*.spec.tsx,*.test.tsx,*.d.ts,Cargo.lock,pnpm-lock.yaml,*.snap,*.generated.*,node_modules/*,dist/*,.next/*,target/*"
+EXCLUDE_PATTERNS="*.test.rs,*.spec.ts,*.test.ts,*.spec.tsx,*.test.tsx,*.d.ts,Cargo.lock,pnpm-lock.yaml,bun.lock,*.snap,*.generated.*,*.gen.ts,node_modules/*,dist/*,.next/*,target/*"
 
 # Rules file
 RULES_FILE="AGENTS.md"
