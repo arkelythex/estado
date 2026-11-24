@@ -22,6 +22,11 @@ describe('AI-first public /llms.txt & route semantics', () => {
       'BigInt',
       'PII',
       'municipality_id',
+      '/public/audit/verify',
+      '/public/reports/track',
+      '/public/ocds/releases.json',
+      '/public/anomalies',
+      'X-Receipt-Code',
     ]) {
       expect(content).toContain(token)
     }
@@ -45,6 +50,9 @@ describe('AI-first public /llms.txt & route semantics', () => {
       'data-testid="kpi-versions"',
       'data-testid="kpi-integrity"',
       'data-testid="dataset-card"',
+      'data-testid="audit-chain-status"',
+      'data-testid="anomalies-panel"',
+      'data-testid="ocds-export-link"',
     ]) {
       expect(indexSrc).toContain(attr)
     }
@@ -56,6 +64,7 @@ describe('AI-first public /llms.txt & route semantics', () => {
       'data-testid="filter-submit"',
       'data-testid="expenses-table"',
       'data-testid="expense-row"',
+      'data-testid="expenses-ocds-link"',
     ]) {
       expect(expensesSrc).toContain(attr)
     }
@@ -70,13 +79,22 @@ describe('AI-first public /llms.txt & route semantics', () => {
       'data-testid="report-continue-btn"',
       'data-testid="report-submit-btn"',
       'data-testid="report-status-alert"',
+      'data-testid="report-receipt-code"',
       'aria-live="polite"',
     ]) {
       expect(reportSrc).toContain(attr)
     }
 
     const reportsIndexSrc = await Bun.file(resolve(ROUTES_DIR, 'reports/index.tsx')).text()
-    expect(reportsIndexSrc).toContain('data-testid="public-report-card"')
+    for (const attr of [
+      'data-testid="public-report-card"',
+      'data-testid="receipt-tracker-form"',
+      'data-testid="receipt-code-input"',
+      'data-testid="receipt-track-btn"',
+      'data-testid="receipt-track-result"',
+    ]) {
+      expect(reportsIndexSrc).toContain(attr)
+    }
 
     const reportDetailSrc = await Bun.file(resolve(ROUTES_DIR, 'reports/$id.tsx')).text()
     expect(reportDetailSrc).toContain('data-testid="public-report-detail"')

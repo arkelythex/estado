@@ -1113,6 +1113,12 @@ tfoot th {
   color: var(--warning-text);
 }
 
+.badge-danger {
+  background: var(--danger-soft);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
 .alert {
   border-radius: var(--radius-lg);
   padding: 0.9rem 1.05rem;
@@ -1291,6 +1297,117 @@ tfoot th {
   color: var(--text);
   font-size: 0.95rem;
   line-height: 1.6;
+}
+
+/* ==========================================================================
+   Fiscal Red Flags, Whistleblower Receipt Banner & Anonymous Tracker
+   ========================================================================== */
+
+.anomaly-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+}
+
+.anomaly-item {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.95rem 1.05rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  transition: border-color 0.16s ease;
+}
+
+.anomaly-item:hover {
+  border-color: var(--border-hover);
+}
+
+.anomaly-item-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.anomaly-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.1rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.anomaly-summary {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.receipt-banner {
+  background: linear-gradient(145deg, rgba(245, 158, 11, 0.08), rgba(0, 229, 255, 0.06));
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-xl);
+  padding: 1.15rem 1.25rem;
+  margin-bottom: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.receipt-banner-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.receipt-banner-title {
+  margin: 0.45rem 0 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.receipt-code-box {
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 0.8rem 1rem;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  text-align: center;
+  user-select: all;
+}
+
+.tracker-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+
+.tracker-form-row .field {
+  flex: 1;
+  min-width: 240px;
+}
+
+.tracker-result-box {
+  margin-top: 1rem;
+}
+
+.tracker-summary {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.1rem;
 }
 
 /* ==========================================================================

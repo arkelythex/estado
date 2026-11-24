@@ -5,6 +5,7 @@ import {
   fetchExpenses,
   formatBigIntCentsPEN,
   formatCentsPEN,
+  getOcdsReleasesUrl,
   sumExpenseCents,
   type Expense,
 } from '../lib/api'
@@ -145,6 +146,17 @@ function ExpensesPage() {
           <p className="page-subtitle">
             Consulta los egresos municipales filtrando por entidad, categoría o rango de fechas.
           </p>
+        </div>
+        <div className="actions-row">
+          <a
+            href={getOcdsReleasesUrl(municipalityId)}
+            target="_blank"
+            rel="noreferrer"
+            className="btn btn-accent"
+            data-testid="expenses-ocds-link"
+          >
+            Exportar OCDS 1.1 JSON
+          </a>
         </div>
       </section>
 

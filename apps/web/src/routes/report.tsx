@@ -40,6 +40,7 @@ function NewReportPage() {
   const [uploadedEvidence, setUploadedEvidence] = useState<UploadedEvidenceItem[]>([])
 
   const [isBusy, setIsBusy] = useState(false)
+  const [copiedReceipt, setCopiedReceipt] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
@@ -52,6 +53,7 @@ function NewReportPage() {
     setReadyEvidence(null)
     setUploadedEvidence([])
     setIsBusy(false)
+    setCopiedReceipt(false)
     setStatusMessage(null)
     setErrorMessage(null)
     return () => {
@@ -207,8 +209,20 @@ function NewReportPage() {
     hashGuardRef.current.invalidate()
     setReadyEvidence(null)
     setUploadedEvidence([])
+    setCopiedReceipt(false)
     setStatusMessage(null)
     setErrorMessage(null)
+  }
+
+  const handleCopyReceipt = async (code: string) => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(code)
+        setCopiedReceipt(true)
+      }
+    } catch {
+      // Clipboard unavailable in restricted contexts; user can select the code manually.
+    }
   }
 
   return (
@@ -506,9 +520,37 @@ function NewReportPage() {
             <span className="badge badge-success">{submittedReport.status}</span>.
           </div>
 
+          {draftReport?.receipt_code ? (
+            <div className="receipt-banner" data-testid="report-receipt-code">
+              <div className="receipt-banner-header">
+                <div>
+                  <span className="badge badge-warning">
+                    RECIBO ÚNICO · NO RECUPERABLE
+                  </span>
+                  <h3 className="receipt-banner-title">
+                    Código de Recibo Anónimo
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-accent"
+                  onClick={() => void handleCopyReceipt(draftReport.receipt_code ?? '')}
+                >
+                  {copiedReceipt ? 'Copiado' : 'Copiar código'}
+                </button>
+              </div>
+              <div className="receipt-code-box mono">
+                {draftReport.receipt_code}
+              </div>
+              <p className="field-hint" style={{ margin: 0 }}>
+                Guarda este código en un lugar seguro. Nunca se almacena en texto plano y no puede recuperarse si lo pierdes. Úsalo en la sección de Reportes Públicos para consultar el avance de tu denuncia de forma anónima.
+              </p>
+            </div>
+          ) : null}
+
           <dl className="summary-dl" style={{ marginBottom: '1.25rem' }}>
             <div>
-              <dt>Código de seguimiento</dt>
+              <dt>Identificador de reporte</dt>
               <dd className="mono">{submittedReport.id}</dd>
             </div>
             <div>

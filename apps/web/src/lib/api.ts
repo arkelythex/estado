@@ -48,6 +48,50 @@ export interface Report {
   category: string
   description: string
   created_at: string
+  receipt_code?: string
+}
+
+export interface AuditVerification {
+  valid: boolean
+  checked_events: number
+  head_hash: string
+  broken_at_seq: number | null
+  reason: string | null
+}
+
+export interface FiscalRedFlag {
+  rule_code: string
+  severity: string
+  entity: string
+  category: string | null
+  total_cents: number
+  expense_count: number
+  affected_ids: string[]
+  share_bps: number | null
+  summary: string
+}
+
+export interface SpendingAnomaliesResponse {
+  total_expenses: number
+  total_amount_cents: number
+  threshold_cents: number
+  flag_count: number
+  flags: FiscalRedFlag[]
+}
+
+export interface ReportTrackingEvent {
+  from_status: string
+  to_status: string
+  action: string
+  occurred_at: string
+}
+
+export interface ReportTracking {
+  municipality_id: string
+  status: string
+  category: string
+  created_at: string
+  timeline: ReportTrackingEvent[]
 }
 
 export interface PublicReportSummary {
@@ -141,6 +185,21 @@ export function formatBigIntCentsPEN(amountCents: bigint): string {
   return `${isNegative ? '-' : ''}S/ ${wholeFormatted}.${fracFormatted}`
 }
 
+/**
+ * Formats integer basis points (10000 = 100.00%) using BigInt without floating-point arithmetic.
+ */
+export function formatBpsPercent(bps: number): string {
+  if (!Number.isSafeInteger(bps)) {
+    throw new RangeError('bps must be a safe integer')
+  }
+  const big = BigInt(bps)
+  const isNegative = big < 0n
+  const abs = isNegative ? -big : big
+  const whole = abs / 100n
+  const frac = abs % 100n
+  return `${isNegative ? '-' : ''}${whole.toString()}.${frac.toString().padStart(2, '0')}%`
+}
+
 export function sumExpenseCents(expenses: readonly Pick<Expense, 'amount_cents'>[]): bigint {
   let total = 0n
   for (const item of expenses) {
@@ -200,6 +259,51 @@ function readSafeInteger(obj: Record<string, unknown>, key: string): number {
   return value
 }
 
+function readNullableSafeInteger(obj: Record<string, unknown>, key: string): number | null {
+  const value = obj[key]
+  if (value === null || value === undefined) {
+    return null
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new ApiError(502, `Invalid API response: expected nullable integer for ${key}`)
+  }
+  return value
+}
+
+function readBoolean(obj: Record<string, unknown>, key: string): boolean {
+  const value = obj[key]
+  if (typeof value !== 'boolean') {
+    throw new ApiError(502, `Invalid API response: expected boolean for ${key}`)
+  }
+  return value
+}
+
+function readOptionalString(obj: Record<string, unknown>, key: string): string | undefined {
+  const value = obj[key]
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  if (typeof value !== 'string') {
+    throw new ApiError(502, `Invalid API response: expected string for ${key}`)
+  }
+  return value
+}
+
+function decodeStringArray(obj: Record<string, unknown>, key: string): string[] {
+  const value = obj[key]
+  if (!Array.isArray(value)) {
+    throw new ApiError(502, `Invalid API response: expected array for ${key}`)
+  }
+  const out: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new ApiError(502, `Invalid API response: expected string item in ${key}`)
+    }
+    out.push(item)
+  }
+  return out
+}
+
 function decodeArray<T>(raw: unknown, decodeItem: (item: unknown) => T): T[] {
   if (!Array.isArray(raw)) {
     throw new ApiError(502, 'Invalid API response: expected JSON array')
@@ -242,13 +346,99 @@ function decodeReport(raw: unknown): Report {
   if (!isRecord(raw)) {
     throw new ApiError(502, 'Invalid API response: expected report object')
   }
-  return {
+  const receiptCode = readOptionalString(raw, 'receipt_code')
+  const base: Report = {
     id: readString(raw, 'id'),
     municipality_id: readString(raw, 'municipality_id'),
     status: readString(raw, 'status'),
     category: readString(raw, 'category'),
     description: readString(raw, 'description'),
     created_at: readString(raw, 'created_at'),
+  }
+  if (receiptCode !== undefined) {
+    base.receipt_code = receiptCode
+  }
+  return base
+}
+
+function decodeAuditVerification(raw: unknown): AuditVerification {
+  if (!isRecord(raw)) {
+    throw new ApiError(502, 'Invalid API response: expected audit verification object')
+  }
+  const checkedEvents = readSafeInteger(raw, 'checked_events')
+  if (checkedEvents < 0) {
+    throw new ApiError(502, 'Invalid API response: checked_events cannot be negative')
+  }
+  return {
+    valid: readBoolean(raw, 'valid'),
+    checked_events: checkedEvents,
+    head_hash: readString(raw, 'head_hash'),
+    broken_at_seq: readNullableSafeInteger(raw, 'broken_at_seq'),
+    reason: readNullableString(raw, 'reason'),
+  }
+}
+
+function decodeFiscalRedFlag(raw: unknown): FiscalRedFlag {
+  if (!isRecord(raw)) {
+    throw new ApiError(502, 'Invalid API response: expected fiscal red flag object')
+  }
+  const expenseCount = readSafeInteger(raw, 'expense_count')
+  if (expenseCount < 0) {
+    throw new ApiError(502, 'Invalid API response: expense_count cannot be negative')
+  }
+  return {
+    rule_code: readString(raw, 'rule_code'),
+    severity: readString(raw, 'severity'),
+    entity: readString(raw, 'entity'),
+    category: readNullableString(raw, 'category'),
+    total_cents: readSafeInteger(raw, 'total_cents'),
+    expense_count: expenseCount,
+    affected_ids: decodeStringArray(raw, 'affected_ids'),
+    share_bps: readNullableSafeInteger(raw, 'share_bps'),
+    summary: readString(raw, 'summary'),
+  }
+}
+
+function decodeSpendingAnomaliesResponse(raw: unknown): SpendingAnomaliesResponse {
+  if (!isRecord(raw)) {
+    throw new ApiError(502, 'Invalid API response: expected spending anomalies object')
+  }
+  const totalExpenses = readSafeInteger(raw, 'total_expenses')
+  const flagCount = readSafeInteger(raw, 'flag_count')
+  if (totalExpenses < 0 || flagCount < 0) {
+    throw new ApiError(502, 'Invalid API response: negative count in anomalies response')
+  }
+  return {
+    total_expenses: totalExpenses,
+    total_amount_cents: readSafeInteger(raw, 'total_amount_cents'),
+    threshold_cents: readSafeInteger(raw, 'threshold_cents'),
+    flag_count: flagCount,
+    flags: decodeArray(raw.flags, decodeFiscalRedFlag),
+  }
+}
+
+function decodeReportTrackingEvent(raw: unknown): ReportTrackingEvent {
+  if (!isRecord(raw)) {
+    throw new ApiError(502, 'Invalid API response: expected tracking event object')
+  }
+  return {
+    from_status: readString(raw, 'from_status'),
+    to_status: readString(raw, 'to_status'),
+    action: readString(raw, 'action'),
+    occurred_at: readString(raw, 'occurred_at'),
+  }
+}
+
+function decodeReportTracking(raw: unknown): ReportTracking {
+  if (!isRecord(raw)) {
+    throw new ApiError(502, 'Invalid API response: expected report tracking object')
+  }
+  return {
+    municipality_id: readString(raw, 'municipality_id'),
+    status: readString(raw, 'status'),
+    category: readString(raw, 'category'),
+    created_at: readString(raw, 'created_at'),
+    timeline: decodeArray(raw.timeline, decodeReportTrackingEvent),
   }
 }
 
@@ -565,4 +755,72 @@ export async function submitReport(
     },
     baseUrl,
   )
+}
+
+export async function fetchAuditVerify(
+  baseUrl?: string,
+): Promise<AuditVerification> {
+  return requestJson(
+    '/public/audit/verify',
+    decodeAuditVerification,
+    undefined,
+    baseUrl,
+  )
+}
+
+export async function fetchSpendingAnomalies(
+  municipalityId: string,
+  thresholdCents?: number,
+  baseUrl?: string,
+): Promise<SpendingAnomaliesResponse> {
+  const params = new URLSearchParams({
+    municipality_id: normalizeMunicipalityId(municipalityId),
+  })
+  if (thresholdCents !== undefined) {
+    if (!Number.isSafeInteger(thresholdCents) || thresholdCents <= 0) {
+      throw new ApiError(400, 'threshold_cents must be a positive safe integer')
+    }
+    params.set('threshold_cents', String(thresholdCents))
+  }
+  return requestJson(
+    `/public/anomalies?${params.toString()}`,
+    decodeSpendingAnomaliesResponse,
+    undefined,
+    baseUrl,
+  )
+}
+
+export async function trackReportByReceipt(
+  municipalityId: string,
+  receiptCode: string,
+  baseUrl?: string,
+): Promise<ReportTracking> {
+  const trimmedCode = receiptCode.trim()
+  if (!trimmedCode) {
+    throw new ApiError(400, 'Ingresa un código de recibo válido.')
+  }
+  const params = new URLSearchParams({
+    municipality_id: normalizeMunicipalityId(municipalityId),
+  })
+  return requestJson(
+    `/public/reports/track?${params.toString()}`,
+    decodeReportTracking,
+    {
+      method: 'GET',
+      headers: {
+        'X-Receipt-Code': trimmedCode,
+      },
+    },
+    baseUrl,
+  )
+}
+
+export function getOcdsReleasesUrl(
+  municipalityId: string,
+  baseUrl = getApiBaseUrl(),
+): string {
+  const params = new URLSearchParams({
+    municipality_id: normalizeMunicipalityId(municipalityId),
+  })
+  return `${baseUrl.replace(/\/+$/, '')}/public/ocds/releases.json?${params.toString()}`
 }
