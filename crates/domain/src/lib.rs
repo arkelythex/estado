@@ -31,8 +31,12 @@ impl ReportStatus {
             "VERIFIED" => Ok(Self::Verified),
             "REJECTED" => Ok(Self::Rejected),
             "PUBLISHED" => Ok(Self::Published),
-            _ => Err(DomainError::UnknownStatus(value.to_string())),
+            _ => Err(DomainError::UnknownStatus),
         }
+    }
+
+    pub fn parse_canonical(value: &str) -> Result<Self, DomainError> {
+        Self::from_db_str(&value.trim().to_ascii_uppercase())
     }
 }
 
@@ -44,13 +48,36 @@ pub struct Report {
     pub status: ReportStatus,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationAction {
     Submit,
     Triage,
     Verify,
     Reject,
     Publish,
+}
+
+impl VerificationAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Submit => "SUBMIT",
+            Self::Triage => "TRIAGE",
+            Self::Verify => "VERIFY",
+            Self::Reject => "REJECT",
+            Self::Publish => "PUBLISH",
+        }
+    }
+
+    pub fn parse_canonical(value: &str) -> Result<Self, DomainError> {
+        match value.trim().to_ascii_uppercase().as_str() {
+            "SUBMIT" => Ok(Self::Submit),
+            "TRIAGE" => Ok(Self::Triage),
+            "VERIFY" => Ok(Self::Verify),
+            "REJECT" => Ok(Self::Reject),
+            "PUBLISH" => Ok(Self::Publish),
+            _ => Err(DomainError::UnknownAction),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -60,14 +87,16 @@ pub enum DomainError {
         from: ReportStatus,
         action: VerificationAction,
     },
-    #[error("unknown status value: {0}")]
-    UnknownStatus(String),
+    #[error("unknown report status")]
+    UnknownStatus,
+    #[error("unknown verification action")]
+    UnknownAction,
 }
 
 impl Report {
-    pub fn new(category: String, description: String) -> Self {
+    pub fn new(id: uuid::Uuid, category: String, description: String) -> Self {
         Self {
-            id: uuid::Uuid::new_v4(),
+            id,
             category,
             description,
             status: ReportStatus::Draft,
@@ -130,5 +159,19 @@ mod tests {
     fn cannot_verify_without_triage() {
         let result = transition(ReportStatus::Submitted, VerificationAction::Verify);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn canonical_parsing_handles_case_and_whitespace() {
+        assert_eq!(
+            ReportStatus::parse_canonical(" draft ").unwrap(),
+            ReportStatus::Draft
+        );
+        assert_eq!(
+            VerificationAction::parse_canonical("triage").unwrap(),
+            VerificationAction::Triage
+        );
+        assert!(ReportStatus::parse_canonical("unknown").is_err());
+        assert!(VerificationAction::parse_canonical("unknown").is_err());
     }
 }
