@@ -22,7 +22,7 @@ jobs:
         run: |
           pg_pass="$(openssl rand -hex 16)"
           minio_pass="$(openssl rand -hex 16)"
-          minio_kms="civictech-ci-key:$(openssl rand -base64 32)"
+          rustfs_key="$(openssl rand -base64 32)"
           kc_db_pass="$(openssl rand -hex 16)"
           kc_admin_pass="$(openssl rand -hex 16)"
           gf_pass="$(openssl rand -hex 16)"
@@ -30,7 +30,7 @@ jobs:
           dev_admin_tok="$(openssl rand -hex 16)"
           dev_mod_tok="$(openssl rand -hex 16)"
 
-          for val in "$pg_pass" "$minio_pass" "$minio_kms" "$kc_db_pass" "$kc_admin_pass" "$gf_pass" "$engine_tok" "$dev_admin_tok" "$dev_mod_tok"; do
+          for val in "$pg_pass" "$minio_pass" "$rustfs_key" "$kc_db_pass" "$kc_admin_pass" "$gf_pass" "$engine_tok" "$dev_admin_tok" "$dev_mod_tok"; do
             echo "::add-mask::$val"
           done
 
@@ -38,8 +38,6 @@ jobs:
             echo "POSTGRES_PASSWORD=$pg_pass"
             echo "DATABASE_URL=postgres://postgres:${pg_pass}@localhost:5432/civictech"
             echo "MINIO_ROOT_PASSWORD=$minio_pass"
-            rustfs_key="$(openssl rand -base64 32)"
-            echo "::add-mask::$rustfs_key" >&2
             echo "RUSTFS_SSE_S3_MASTER_KEY=$rustfs_key"
             echo "KEYCLOAK_DB_PASSWORD=$kc_db_pass"
             echo "KEYCLOAK_ADMIN_PASSWORD=$kc_admin_pass"
