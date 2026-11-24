@@ -168,34 +168,42 @@ func (s *Service) authenticateOIDC(ctx context.Context, authHeader string) (doma
 		return domain.Principal{}, err
 	}
 
-	if strings.TrimSpace(s.cfg.OIDCJWKSURL) == "" {
-		return domain.Principal{}, fmt.Errorf("%w: OIDC JWKS URL not configured", domain.ErrUnauthorized)
+	jwksURL := strings.TrimSpace(s.cfg.OIDCJWKSURL)
+	issuer := strings.TrimSpace(s.cfg.OIDCIssuer)
+	audience := strings.TrimSpace(s.cfg.OIDCAudience)
+	if jwksURL == "" || issuer == "" || audience == "" {
+		return domain.Principal{}, fmt.Errorf("%w: OIDC issuer, audience, and JWKS URL must be configured", domain.ErrUnauthorized)
 	}
 
 	parserOpts := []jwt.ParserOption{
 		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
 		jwt.WithExpirationRequired(),
-	}
-	if strings.TrimSpace(s.cfg.OIDCIssuer) != "" {
-		parserOpts = append(parserOpts, jwt.WithIssuer(s.cfg.OIDCIssuer))
-	}
-	if strings.TrimSpace(s.cfg.OIDCAudience) != "" {
-		parserOpts = append(parserOpts, jwt.WithAudience(s.cfg.OIDCAudience))
+		jwt.WithIssuer(issuer),
+		jwt.WithAudience(audience),
 	}
 
 	claims := &oidcClaims{}
 	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
 		kid, _ := t.Header["kid"].(string)
-		if strings.TrimSpace(kid) == "" {
+		kid = strings.TrimSpace(kid)
+		if kid == "" {
 			return nil, domain.ErrUnauthorized
 		}
-		keys, err := s.getJWKSKeys(ctx)
+		keys, err := s.getJWKSKeys(ctx, false)
 		if err != nil {
 			return nil, err
 		}
 		pubKey, ok := keys[kid]
 		if !ok {
-			return nil, domain.ErrUnauthorized
+			// Unknown kid may indicate IdP key rotation; force a JWKS refresh once.
+			keys, err = s.getJWKSKeys(ctx, true)
+			if err != nil {
+				return nil, err
+			}
+			pubKey, ok = keys[kid]
+			if !ok {
+				return nil, domain.ErrUnauthorized
+			}
 		}
 		return pubKey, nil
 	}, parserOpts...)
@@ -214,21 +222,37 @@ func (s *Service) authenticateOIDC(ctx context.Context, authHeader string) (doma
 	}, nil
 }
 
-func (s *Service) getJWKSKeys(ctx context.Context) (map[string]*rsa.PublicKey, error) {
+func (s *Service) getJWKSKeys(ctx context.Context, forceRefresh bool) (map[string]*rsa.PublicKey, error) {
 	s.mu.RLock()
-	if s.cache != nil && time.Since(s.cache.fetchedAt) < s.cfg.JWKSCacheTTL {
-		keys := s.cache.keys
-		s.mu.RUnlock()
-		return keys, nil
-	}
+	cached := s.cache
 	s.mu.RUnlock()
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cache != nil && time.Since(s.cache.fetchedAt) < s.cfg.JWKSCacheTTL {
-		return s.cache.keys, nil
+	if !forceRefresh && cached != nil && time.Since(cached.fetchedAt) < s.cfg.JWKSCacheTTL {
+		return cached.keys, nil
 	}
 
+	// Perform outbound HTTP fetch without holding s.mu.Lock() so concurrent verifications aren't stalled.
+	parsed, err := s.fetchJWKS(ctx)
+	if err != nil {
+		s.mu.RLock()
+		fallback := s.cache
+		s.mu.RUnlock()
+		if fallback != nil && len(fallback.keys) > 0 {
+			return fallback.keys, nil
+		}
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.cache = &jwksCacheEntry{
+		fetchedAt: time.Now(),
+		keys:      parsed,
+	}
+	s.mu.Unlock()
+	return parsed, nil
+}
+
+func (s *Service) fetchJWKS(ctx context.Context) (map[string]*rsa.PublicKey, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.OIDCJWKSURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build jwks request: %w", err)
@@ -258,16 +282,17 @@ func (s *Service) getJWKSKeys(ctx context.Context) (map[string]*rsa.PublicKey, e
 		if k.Kty != "RSA" || strings.TrimSpace(k.Kid) == "" {
 			continue
 		}
+		if k.Alg != "" && k.Alg != jwt.SigningMethodRS256.Alg() {
+			continue
+		}
+		if k.Use != "" && k.Use != "sig" {
+			continue
+		}
 		pub, err := parseRSAPublicKey(k.N, k.E)
 		if err != nil {
 			continue
 		}
 		parsed[k.Kid] = pub
-	}
-
-	s.cache = &jwksCacheEntry{
-		fetchedAt: time.Now(),
-		keys:      parsed,
 	}
 	return parsed, nil
 }
@@ -324,15 +349,10 @@ func extractRoles(claims *oidcClaims, clientID string) map[domain.Role]bool {
 	if claims.RealmAccess != nil {
 		addRaw(claims.RealmAccess.Roles)
 	}
-	if claims.ResourceAccess != nil {
-		if clientID != "" {
-			if ra, ok := claims.ResourceAccess[clientID]; ok {
-				addRaw(ra.Roles)
-			}
-		} else {
-			for _, ra := range claims.ResourceAccess {
-				addRaw(ra.Roles)
-			}
+	trimmedClientID := strings.TrimSpace(clientID)
+	if claims.ResourceAccess != nil && trimmedClientID != "" {
+		if ra, ok := claims.ResourceAccess[trimmedClientID]; ok {
+			addRaw(ra.Roles)
 		}
 	}
 	return out

@@ -549,6 +549,11 @@ func (s *Store) IngestExpensesIdempotent(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Serialize concurrent ingestions for the same (municipality_id, source_kind) within this transaction.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2))`, muni, sourceKind); err != nil {
+		return domain.IngestResult{}, fmt.Errorf("acquire ingest advisory lock: %w", err)
+	}
+
 	var sourceID uuid.UUID
 	err = tx.QueryRow(ctx, `
 		SELECT id
@@ -599,12 +604,33 @@ func (s *Store) IngestExpensesIdempotent(
 	}
 
 	versionID := uuid.New()
-	_, err = tx.Exec(ctx, `
+	cmd, err := tx.Exec(ctx, `
 		INSERT INTO dataset_versions (id, source_id, checksum_sha256, ingested_at)
 		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (source_id, checksum_sha256) DO NOTHING
 	`, versionID, sourceID, checksum, now)
 	if err != nil {
 		return domain.IngestResult{}, fmt.Errorf("insert dataset version: %w", err)
+	}
+	if cmd.RowsAffected() == 0 {
+		if err := tx.QueryRow(ctx, `
+			SELECT id
+			FROM dataset_versions
+			WHERE source_id = $1 AND checksum_sha256 = $2
+			LIMIT 1
+		`, sourceID, checksum).Scan(&existingVersionID); err != nil {
+			return domain.IngestResult{}, fmt.Errorf("lookup conflicting dataset version: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return domain.IngestResult{}, fmt.Errorf("commit dedup ingest: %w", err)
+		}
+		return domain.IngestResult{
+			MunicipalityID:   muni,
+			DatasetVersionID: existingVersionID,
+			ChecksumSHA256:   checksum,
+			RowsIngested:     0,
+			Deduplicated:     true,
+		}, nil
 	}
 
 	for _, r := range rows {

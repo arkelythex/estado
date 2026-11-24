@@ -308,6 +308,31 @@ describe('API client URL construction, parsing, and error handling', () => {
     })
   })
 
+  test('requestEvidenceUpload treats null upload_headers identically to undefined', async () => {
+    mockFetchOnce(() =>
+      Response.json({
+        report_id: 'rep-9',
+        evidence_id: 'ev-1',
+        upload_url: 'https://minio.local/presigned',
+        object_key: 'reports/rep-9/ev-1.pdf',
+        expires_in_seconds: 900,
+        upload_headers: null,
+      }),
+    )
+
+    const res = await requestEvidenceUpload(
+      'rep-9',
+      {
+        municipality_id: 'lima',
+        content_type: 'application/pdf',
+        size_bytes: 1024,
+        sha256: 'a'.repeat(64),
+      },
+      baseUrl,
+    )
+    expect(res.upload_headers).toBeUndefined()
+  })
+
   test('requestEvidenceUpload rejects non-string upload_headers values', async () => {
     mockFetchOnce(() =>
       Response.json({

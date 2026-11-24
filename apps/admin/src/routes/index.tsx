@@ -235,7 +235,7 @@ function ModerationQueuePage() {
               type="button"
               className="btn btn-primary"
               onClick={() => void loadQueue()}
-              disabled={isLoading}
+              disabled={!hasToken || isLoading}
             >
               {isLoading ? 'Actualizando...' : 'Actualizar Cola'}
             </button>

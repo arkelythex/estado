@@ -92,8 +92,8 @@ func ValidateEvidenceUpload(contentType string, sizeBytes int64) (string, string
 		return "", "", fmt.Errorf("%w: unsupported content_type %q; allowed: application/pdf, image/jpeg, image/png, image/webp, text/plain", domain.ErrValidation, contentType)
 	}
 
-	if sizeBytes < 0 || sizeBytes > MaxEvidenceSizeBytes {
-		return "", "", fmt.Errorf("%w: size_bytes must be between 0 and %d", domain.ErrValidation, MaxEvidenceSizeBytes)
+	if sizeBytes <= 0 || sizeBytes > MaxEvidenceSizeBytes {
+		return "", "", fmt.Errorf("%w: size_bytes must be between 1 and %d", domain.ErrValidation, MaxEvidenceSizeBytes)
 	}
 
 	return normalized, ext, nil
@@ -110,10 +110,8 @@ func (s *Signer) PresignPut(ctx context.Context, reportID uuid.UUID, contentType
 		Bucket:               aws.String(s.bucket),
 		Key:                  aws.String(objectKey),
 		ContentType:          aws.String(normalizedType),
+		ContentLength:        aws.Int64(sizeBytes),
 		ServerSideEncryption: types.ServerSideEncryptionAes256,
-	}
-	if sizeBytes > 0 {
-		input.ContentLength = aws.Int64(sizeBytes)
 	}
 
 	presigned, err := s.presignClient.PresignPutObject(ctx, input, func(opts *s3.PresignOptions) {

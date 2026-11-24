@@ -547,6 +547,21 @@ func TestCitizenAndModerationLifecycleWithAuditTrail(t *testing.T) {
 		t.Fatalf("expected 400 for invalid mime, got %d", badMime.Code)
 	}
 
+	missingSize := doReq(t, h, http.MethodPost, "/reports/"+created.ID.String()+"/evidence", map[string]any{
+		"content_type": "application/pdf",
+	}, "")
+	if missingSize.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing size_bytes, got %d", missingSize.Code)
+	}
+
+	zeroSize := doReq(t, h, http.MethodPost, "/reports/"+created.ID.String()+"/evidence", map[string]any{
+		"content_type": "application/pdf",
+		"size_bytes":   0,
+	}, "")
+	if zeroSize.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for zero size_bytes, got %d", zeroSize.Code)
+	}
+
 	tooLarge := doReq(t, h, http.MethodPost, "/reports/"+created.ID.String()+"/evidence", map[string]any{
 		"content_type": "application/pdf",
 		"size_bytes":   10*1024*1024 + 1,
