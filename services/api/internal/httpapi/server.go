@@ -2,13 +2,21 @@ package httpapi
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,19 +30,23 @@ import (
 type Config struct {
 	DemoExpensesCSVPath string
 	AllowedOrigins      []string
+	RateLimitPerMinute  int
+	RateLimitBurst      int
 }
 
 const (
 	idempotencyTTL        = 15 * time.Minute
 	idempotencyMaxEntries = 1024
 	maxIdempotencyKeyLen  = 128
+	defaultRatePerMinute  = 60
 )
 
 type idempotencyEntry struct {
-	report    domain.Report
-	err       error
-	createdAt time.Time
-	inFlight  chan struct{}
+	payloadDigest string
+	report        domain.Report
+	err           error
+	createdAt     time.Time
+	inFlight      chan struct{}
 }
 
 type Server struct {
@@ -46,6 +58,7 @@ type Server struct {
 	metrics        *Metrics
 	demoCSVPath    string
 	allowedOrigins map[string]bool
+	limiter        *ipRateLimiter
 	mux            *http.ServeMux
 	idemMu         sync.Mutex
 	idemCache      map[string]*idempotencyEntry
@@ -75,6 +88,15 @@ func NewServer(
 		csvPath = "fixtures/demo_expenses.csv"
 	}
 
+	ratePerMin := cfg.RateLimitPerMinute
+	if ratePerMin <= 0 {
+		ratePerMin = defaultRatePerMinute
+	}
+	burst := cfg.RateLimitBurst
+	if burst <= 0 {
+		burst = ratePerMin
+	}
+
 	s := &Server{
 		store:          store,
 		engine:         engine,
@@ -84,6 +106,7 @@ func NewServer(
 		metrics:        NewMetrics(),
 		demoCSVPath:    csvPath,
 		allowedOrigins: originSet,
+		limiter:        newIPRateLimiter(ratePerMin, burst),
 		mux:            http.NewServeMux(),
 		idemCache:      make(map[string]*idempotencyEntry),
 	}
@@ -105,11 +128,15 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /public/datasets", s.handleListDatasets)
 	s.mux.HandleFunc("GET /public/expenses", s.handleListExpenses)
 	s.mux.HandleFunc("GET /public/reports", s.handleListPublishedReports)
+	s.mux.HandleFunc("GET /public/reports/track", s.rateLimit(s.handleTrackReport))
 	s.mux.HandleFunc("GET /public/reports/{id}", s.handleGetPublishedReport)
+	s.mux.HandleFunc("GET /public/audit/verify", s.handleVerifyAuditChain)
+	s.mux.HandleFunc("GET /public/ocds/releases.json", s.handleOCDSReleases)
+	s.mux.HandleFunc("GET /public/anomalies", s.handleAnomalies)
 
-	s.mux.HandleFunc("POST /reports", s.handleCreateReport)
-	s.mux.HandleFunc("POST /reports/{id}/evidence", s.handleAddEvidence)
-	s.mux.HandleFunc("POST /reports/{id}/submit", s.handleSubmitReport)
+	s.mux.HandleFunc("POST /reports", s.rateLimit(s.handleCreateReport))
+	s.mux.HandleFunc("POST /reports/{id}/evidence", s.rateLimit(s.handleAddEvidence))
+	s.mux.HandleFunc("POST /reports/{id}/submit", s.rateLimit(s.handleSubmitReport))
 
 	s.mux.HandleFunc("GET /moderation/cases", s.handleListModerationCases)
 	s.mux.HandleFunc("POST /moderation/cases/{id}/triage", s.handleModerationTransition("TRIAGE"))
@@ -243,10 +270,16 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request) {
 
 	if idempotencyKey != "" {
 		cacheKey := muni + ":" + idempotencyKey
+		payloadDigest := createReportPayloadDigest(muni, category, description)
 		now := time.Now()
 		s.idemMu.Lock()
 		s.pruneIdempotencyLocked(now)
 		if existing, ok := s.idemCache[cacheKey]; ok {
+			if existing.payloadDigest != payloadDigest {
+				s.idemMu.Unlock()
+				writeStructuredError(w, http.StatusConflict, "Idempotency-Key was already used with a different request payload", "IDEMPOTENCY_KEY_CONFLICT", false)
+				return
+			}
 			if existing.inFlight != nil {
 				ch := existing.inFlight
 				s.idemMu.Unlock()
@@ -270,8 +303,9 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request) {
 		}
 
 		entry := &idempotencyEntry{
-			createdAt: now,
-			inFlight:  make(chan struct{}),
+			payloadDigest: payloadDigest,
+			createdAt:     now,
+			inFlight:      make(chan struct{}),
 		}
 		s.idemCache[cacheKey] = entry
 		s.idemMu.Unlock()
@@ -279,7 +313,10 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request) {
 		created, err := s.createDraftReport(r, muni, category, description)
 
 		s.idemMu.Lock()
-		entry.report = created
+		cached := created
+		cached.ReceiptCode = ""
+		cached.ReceiptHash = ""
+		entry.report = cached
 		entry.err = err
 		if err != nil {
 			delete(s.idemCache, cacheKey)
@@ -305,6 +342,10 @@ func (s *Server) handleCreateReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createDraftReport(r *http.Request, muni, category, description string) (domain.Report, error) {
+	receiptCode, err := generateReceiptCode()
+	if err != nil {
+		return domain.Report{}, fmt.Errorf("generate receipt code: %w", err)
+	}
 	report := domain.Report{
 		ID:             uuid.New(),
 		MunicipalityID: muni,
@@ -312,9 +353,16 @@ func (s *Server) createDraftReport(r *http.Request, muni, category, description 
 		Category:       category,
 		Description:    description,
 		CreatedAt:      time.Now().UTC(),
+		ReceiptHash:    sha256Hex(receiptCode),
 	}
 	actor := domain.Actor{Type: "citizen", ID: "anonymous"}
-	return s.store.CreateReport(r.Context(), report, actor)
+	created, err := s.store.CreateReport(r.Context(), report, actor)
+	if err != nil {
+		return domain.Report{}, err
+	}
+	created.ReceiptHash = ""
+	created.ReceiptCode = receiptCode
+	return created, nil
 }
 
 func (s *Server) pruneIdempotencyLocked(now time.Time) {
@@ -703,6 +751,186 @@ func (s *Server) handleIngestDemo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+func (s *Server) handleVerifyAuditChain(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.store.ListAuditChain(r.Context(), 500)
+	if err != nil {
+		s.writeMappedError(w, err)
+		return
+	}
+	ver, err := s.engine.VerifyAuditChain(r.Context(), entries)
+	if err != nil {
+		s.writeMappedError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ver)
+}
+
+func (s *Server) handleTrackReport(w http.ResponseWriter, r *http.Request) {
+	canonicalCode, ok := normalizeReceiptCode(r.Header.Get("X-Receipt-Code"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "valid X-Receipt-Code header is required")
+		return
+	}
+	muni := domain.NormalizeMunicipality(r.URL.Query().Get("municipality_id"))
+	tracking, err := s.store.TrackReportByReceiptHash(r.Context(), muni, sha256Hex(canonicalCode))
+	if err != nil {
+		s.writeMappedError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tracking)
+}
+
+type ocdsValue struct {
+	Amount   json.Number `json:"amount"`
+	Currency string      `json:"currency"`
+}
+
+type ocdsParty struct {
+	Name string `json:"name"`
+}
+
+type ocdsTender struct {
+	ID     string    `json:"id"`
+	Title  string    `json:"title"`
+	Status string    `json:"status"`
+	Value  ocdsValue `json:"value"`
+}
+
+type ocdsAward struct {
+	ID     string    `json:"id"`
+	Status string    `json:"status"`
+	Value  ocdsValue `json:"value"`
+}
+
+type ocdsContract struct {
+	ID      string    `json:"id"`
+	AwardID string    `json:"awardID"`
+	Status  string    `json:"status"`
+	Value   ocdsValue `json:"value"`
+}
+
+type ocdsRelease struct {
+	OCID           string         `json:"ocid"`
+	ID             string         `json:"id"`
+	Date           string         `json:"date"`
+	Tag            []string       `json:"tag"`
+	InitiationType string         `json:"initiationType"`
+	Buyer          ocdsParty      `json:"buyer"`
+	Tender         ocdsTender     `json:"tender"`
+	Awards         []ocdsAward    `json:"awards"`
+	Contracts      []ocdsContract `json:"contracts"`
+}
+
+type ocdsReleasePackage struct {
+	Version       string        `json:"version"`
+	URI           string        `json:"uri"`
+	PublishedDate string        `json:"publishedDate"`
+	Publisher     ocdsParty     `json:"publisher"`
+	Releases      []ocdsRelease `json:"releases"`
+}
+
+func (s *Server) handleOCDSReleases(w http.ResponseWriter, r *http.Request) {
+	muni := domain.NormalizeMunicipality(r.URL.Query().Get("municipality_id"))
+	expenses, err := s.store.ListExpenses(r.Context(), domain.ExpenseFilter{
+		MunicipalityID: muni,
+	})
+	if err != nil {
+		s.writeMappedError(w, err)
+		return
+	}
+
+	now := time.Now().UTC()
+	publishedDate := now.Format(time.RFC3339)
+	releases := make([]ocdsRelease, 0, len(expenses))
+	for _, e := range expenses {
+		releaseDate := publishedDate
+		if e.OccurredOn != nil && strings.TrimSpace(*e.OccurredOn) != "" {
+			releaseDate = strings.TrimSpace(*e.OccurredOn) + "T00:00:00Z"
+		}
+		tenderID := e.ID.String()
+		if e.DocRef != nil && strings.TrimSpace(*e.DocRef) != "" {
+			tenderID = strings.TrimSpace(*e.DocRef)
+		}
+		val := ocdsValue{
+			Amount:   json.Number(domain.FormatCents(e.AmountCents)),
+			Currency: "PEN",
+		}
+		awardID := "award-" + e.ID.String()
+		contractID := "contract-" + e.ID.String()
+		releases = append(releases, ocdsRelease{
+			OCID:           fmt.Sprintf("ocds-pe-%s-%s", muni, e.ID.String()),
+			ID:             e.ID.String(),
+			Date:           releaseDate,
+			Tag:            []string{"implementation"},
+			InitiationType: "tender",
+			Buyer:          ocdsParty{Name: e.Entity},
+			Tender: ocdsTender{
+				ID:     tenderID,
+				Title:  e.Category,
+				Status: "complete",
+				Value:  val,
+			},
+			Awards: []ocdsAward{
+				{ID: awardID, Status: "active", Value: val},
+			},
+			Contracts: []ocdsContract{
+				{ID: contractID, AwardID: awardID, Status: "active", Value: val},
+			},
+		})
+	}
+
+	pkg := ocdsReleasePackage{
+		Version:       "1.1",
+		URI:           "/public/ocds/releases.json?municipality_id=" + url.QueryEscape(muni),
+		PublishedDate: publishedDate,
+		Publisher:     ocdsParty{Name: "CivicTech Peru"},
+		Releases:      releases,
+	}
+	writeJSON(w, http.StatusOK, pkg)
+}
+
+func (s *Server) handleAnomalies(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	muni := domain.NormalizeMunicipality(q.Get("municipality_id"))
+
+	var thresholdPtr *int64
+	if rawThresh := strings.TrimSpace(q.Get("threshold_cents")); rawThresh != "" {
+		parsed, err := strconv.ParseInt(rawThresh, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeError(w, http.StatusBadRequest, "threshold_cents must be a positive integer")
+			return
+		}
+		thresholdPtr = &parsed
+	}
+
+	expenses, err := s.store.ListExpenses(r.Context(), domain.ExpenseFilter{
+		MunicipalityID: muni,
+	})
+	if err != nil {
+		s.writeMappedError(w, err)
+		return
+	}
+
+	inputs := make([]domain.ExpenseAnalyticsInput, 0, len(expenses))
+	for _, e := range expenses {
+		inputs = append(inputs, domain.ExpenseAnalyticsInput{
+			ID:          e.ID.String(),
+			Entity:      e.Entity,
+			Category:    e.Category,
+			AmountCents: e.AmountCents,
+			OccurredOn:  e.OccurredOn,
+			DocRef:      e.DocRef,
+		})
+	}
+
+	res, err := s.engine.AnalyzeExpenses(r.Context(), thresholdPtr, inputs)
+	if err != nil {
+		s.writeMappedError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request, roles ...domain.Role) (domain.Principal, bool) {
 	principal, err := s.auth.Authenticate(r.Context(), r.Header.Get("Authorization"))
 	if err != nil {
@@ -757,7 +985,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Receipt-Code")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}
 		if r.Method == http.MethodOptions {
@@ -892,6 +1120,8 @@ func errorCodeForStatus(status int) (string, bool) {
 		return "NOT_FOUND", false
 	case http.StatusConflict:
 		return "CONFLICT", true
+	case http.StatusTooManyRequests:
+		return "RATE_LIMITED", true
 	case http.StatusUnprocessableEntity:
 		return "INVALID_STATE_TRANSITION", false
 	case http.StatusRequestTimeout:
@@ -921,4 +1151,189 @@ func writeStructuredError(w http.ResponseWriter, status int, msg, code string, r
 func writeError(w http.ResponseWriter, status int, msg string) {
 	code, retryable := errorCodeForStatus(status)
 	writeStructuredError(w, status, msg, code, retryable)
+}
+
+const receiptAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func generateReceiptCode() (string, error) {
+	alphaLen := big.NewInt(int64(len(receiptAlphabet)))
+	var buf [19]byte
+	pos := 0
+	for i := 0; i < 16; i++ {
+		if i > 0 && i%4 == 0 {
+			buf[pos] = '-'
+			pos++
+		}
+		n, err := rand.Int(rand.Reader, alphaLen)
+		if err != nil {
+			return "", err
+		}
+		buf[pos] = receiptAlphabet[n.Int64()]
+		pos++
+	}
+	return string(buf[:]), nil
+}
+
+func normalizeReceiptCode(raw string) (string, bool) {
+	trimmed := strings.ToUpper(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return "", false
+	}
+	var clean [16]byte
+	idx := 0
+	switch len(trimmed) {
+	case 19:
+		for i := 0; i < len(trimmed); i++ {
+			c := trimmed[i]
+			if i == 4 || i == 9 || i == 14 {
+				if c != '-' {
+					return "", false
+				}
+				continue
+			}
+			if !isUpperAlnum(c) {
+				return "", false
+			}
+			clean[idx] = c
+			idx++
+		}
+	case 16:
+		for i := 0; i < len(trimmed); i++ {
+			c := trimmed[i]
+			if !isUpperAlnum(c) {
+				return "", false
+			}
+			clean[idx] = c
+			idx++
+		}
+	default:
+		return "", false
+	}
+	return fmt.Sprintf("%s-%s-%s-%s", clean[0:4], clean[4:8], clean[8:12], clean[12:16]), true
+}
+
+func isUpperAlnum(c byte) bool {
+	return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+func sha256Hex(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
+}
+
+func createReportPayloadDigest(muni, category, description string) string {
+	h := sha256.New()
+	var lenBuf [8]byte
+	for _, s := range []string{muni, category, description} {
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(s)))
+		_, _ = h.Write(lenBuf[:])
+		_, _ = h.Write([]byte(s))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+type ipBucket struct {
+	tokens int64
+	last   time.Time
+}
+
+type ipRateLimiter struct {
+	mu             sync.Mutex
+	capacity       int64
+	refillInterval time.Duration
+	buckets        map[string]*ipBucket
+}
+
+func newIPRateLimiter(ratePerMinute, burst int) *ipRateLimiter {
+	interval := time.Minute / time.Duration(ratePerMinute)
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	return &ipRateLimiter{
+		capacity:       int64(burst),
+		refillInterval: interval,
+		buckets:        make(map[string]*ipBucket),
+	}
+}
+
+func (l *ipRateLimiter) allow(ip string, now time.Time) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if len(l.buckets) > 4096 {
+		for k, b := range l.buckets {
+			if now.Sub(b.last) > 10*time.Minute {
+				delete(l.buckets, k)
+			}
+		}
+	}
+
+	b, ok := l.buckets[ip]
+	if !ok {
+		b = &ipBucket{
+			tokens: l.capacity,
+			last:   now,
+		}
+		l.buckets[ip] = b
+	} else {
+		elapsed := now.Sub(b.last)
+		if elapsed > 0 {
+			added := int64(elapsed / l.refillInterval)
+			if added > 0 {
+				b.tokens += added
+				if b.tokens > l.capacity {
+					b.tokens = l.capacity
+				}
+				b.last = b.last.Add(time.Duration(added) * l.refillInterval)
+			}
+		}
+	}
+
+	if b.tokens >= 1 {
+		b.tokens--
+		return true, 0
+	}
+
+	wait := l.refillInterval - now.Sub(b.last)
+	if wait < 0 {
+		wait = l.refillInterval
+	}
+	retryAfter := int((wait + time.Second - 1) / time.Second)
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	return false, retryAfter
+}
+
+func (s *Server) rateLimit(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
+		allowed, retryAfter := s.limiter.allow(ip, time.Now())
+		if !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeStructuredError(w, http.StatusTooManyRequests, "rate limit exceeded", "RATE_LIMITED", true)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func clientIP(r *http.Request) string {
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		if first != "" {
+			return first
+		}
+	}
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		return xrip
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		return host
+	}
+	if addr := strings.TrimSpace(r.RemoteAddr); addr != "" {
+		return addr
+	}
+	return "unknown"
 }

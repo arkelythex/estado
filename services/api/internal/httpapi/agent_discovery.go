@@ -45,16 +45,22 @@ Invalid transitions return HTTP 422 with code="INVALID_STATE_TRANSITION" and all
 - Moderation endpoints (/moderation/*): Authorization: Bearer <token> with MODERATOR or ADMIN role.
 - Admin ingestion (/admin/ingest/demo): Authorization: Bearer <token> with ADMIN role.
 
-## Idempotency
-- POST /reports supports optional header Idempotency-Key (scoped per municipality_id). Retrying returns the existing draft report without duplicating records.
+## Idempotency & Anonymous Whistleblower Receipts
+- POST /reports supports optional header Idempotency-Key (scoped per municipality_id and bound to SHA-256 payload digest). Retrying with the same payload returns the existing draft report; reusing the key with a different payload returns 409 IDEMPOTENCY_KEY_CONFLICT.
+- POST /reports returns a one-time anonymous receipt_code (XXXX-XXXX-XXXX-XXXX, stored only as SHA-256 hash). Citizens can track status via GET /public/reports/track with header X-Receipt-Code (no PII exposed).
 - POST /admin/ingest/demo deduplicates by SHA-256 dataset checksum and returns deduplicated=true on replay.
+- Public write/track endpoints (/reports*, /public/reports/track) enforce per-IP rate limiting (429 RATE_LIMITED with Retry-After).
 
 ## Base Endpoints
 - GET /public/datasets?municipality_id=lima
 - GET /public/expenses?municipality_id=lima&entity=...&category=...&from=YYYY-MM-DD&to=YYYY-MM-DD
+- GET /public/ocds/releases.json?municipality_id=lima
+- GET /public/anomalies?municipality_id=lima&threshold_cents=...
+- GET /public/audit/verify
 - GET /public/reports?municipality_id=lima
+- GET /public/reports/track (header: X-Receipt-Code)
 - GET /public/reports/{id}?municipality_id=lima
-- POST /reports (supports Idempotency-Key)
+- POST /reports (supports Idempotency-Key; returns one-time receipt_code)
 - POST /reports/{id}/evidence
 - POST /reports/{id}/submit
 - GET /moderation/cases?municipality_id=lima&status=SUBMITTED
@@ -85,6 +91,8 @@ func (s *Server) handleAgentManifest(w http.ResponseWriter, r *http.Request) {
 		"municipalities":       []string{domain.DefaultMunicipalityID},
 		"default_municipality": domain.DefaultMunicipalityID,
 		"idempotency_header":   "Idempotency-Key",
+		"receipt_header":       "X-Receipt-Code",
+		"ocds_version":         "1.1",
 		"money_representation": map[string]any{
 			"field":               "amount_cents",
 			"type":                "int64",
@@ -225,6 +233,27 @@ func buildOpenAPISpec() map[string]any {
 					},
 				},
 			},
+			"/public/reports/track": map[string]any{
+				"get": map[string]any{
+					"summary": "Track an anonymous citizen report using its one-time receipt code (PII-free)",
+					"parameters": []any{
+						muniParam,
+						map[string]any{
+							"name":        "X-Receipt-Code",
+							"in":          "header",
+							"required":    true,
+							"description": "One-time anonymous receipt code formatted XXXX-XXXX-XXXX-XXXX",
+							"schema":      map[string]any{"type": "string"},
+						},
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Privacy-safe report status and timeline", "content": jsonContent("#/components/schemas/ReportTracking")},
+						"400": map[string]any{"description": "Missing or malformed X-Receipt-Code", "content": map[string]any{"application/json": map[string]any{"schema": errRespRef}}},
+						"404": map[string]any{"description": "Receipt not found", "content": map[string]any{"application/json": map[string]any{"schema": errRespRef}}},
+						"429": map[string]any{"description": "Rate limit exceeded", "content": map[string]any{"application/json": map[string]any{"schema": errRespRef}}},
+					},
+				},
+			},
 			"/public/reports/{id}": map[string]any{
 				"get": map[string]any{
 					"summary":    "Get a published citizen report detail",
@@ -235,15 +264,45 @@ func buildOpenAPISpec() map[string]any {
 					},
 				},
 			},
+			"/public/audit/verify": map[string]any{
+				"get": map[string]any{
+					"summary": "Verify cryptographic SHA-256 audit log chain integrity via Rust engine",
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Chain verification status", "content": jsonContent("#/components/schemas/ChainVerification")},
+					},
+				},
+			},
+			"/public/ocds/releases.json": map[string]any{
+				"get": map[string]any{
+					"summary":    "Export municipal expenses as an OCDS 1.1 JSON release package",
+					"parameters": []any{muniParam},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "OCDS 1.1 release package"},
+					},
+				},
+			},
+			"/public/anomalies": map[string]any{
+				"get": map[string]any{
+					"summary": "Detect deterministic fiscal red flags in municipal expenses via Rust engine",
+					"parameters": []any{
+						muniParam,
+						map[string]any{"name": "threshold_cents", "in": "query", "required": false, "schema": map[string]any{"type": "integer", "format": "int64", "minimum": 1}},
+					},
+					"responses": map[string]any{
+						"200": map[string]any{"description": "Fiscal red-flag analysis", "content": jsonContent("#/components/schemas/AnalyzeExpensesResponse")},
+						"400": map[string]any{"description": "Invalid threshold_cents", "content": map[string]any{"application/json": map[string]any{"schema": errRespRef}}},
+					},
+				},
+			},
 			"/reports": map[string]any{
 				"post": map[string]any{
-					"summary": "Create a draft citizen report (supports Idempotency-Key)",
+					"summary": "Create a draft citizen report (supports Idempotency-Key; returns one-time receipt_code)",
 					"parameters": []any{
 						map[string]any{
 							"name":        "Idempotency-Key",
 							"in":          "header",
 							"required":    false,
-							"description": "Optional idempotency key scoped by municipality_id to prevent duplicate drafts on retry",
+							"description": "Optional idempotency key scoped by municipality_id and payload digest to prevent duplicate drafts on retry",
 							"schema":      map[string]any{"type": "string", "maxLength": 128},
 						},
 					},
@@ -252,9 +311,11 @@ func buildOpenAPISpec() map[string]any {
 						"content":  jsonContent("#/components/schemas/CreateReportRequest"),
 					},
 					"responses": map[string]any{
-						"201": map[string]any{"description": "Draft report created", "content": jsonContent("#/components/schemas/Report")},
+						"201": map[string]any{"description": "Draft report created with one-time receipt_code", "content": jsonContent("#/components/schemas/Report")},
 						"200": map[string]any{"description": "Idempotent replay returning existing draft report", "content": jsonContent("#/components/schemas/Report")},
 						"400": map[string]any{"description": "Validation error", "content": map[string]any{"application/json": map[string]any{"schema": errRespRef}}},
+						"409": map[string]any{"description": "Idempotency-Key reused with different payload", "content": map[string]any{"application/json": map[string]any{"schema": errRespRef}}},
+						"429": map[string]any{"description": "Rate limit exceeded", "content": map[string]any{"application/json": map[string]any{"schema": errRespRef}}},
 					},
 				},
 			},
@@ -409,8 +470,54 @@ func buildOpenAPISpec() map[string]any {
 						"category":        map[string]any{"type": "string"},
 						"description":     map[string]any{"type": "string"},
 						"created_at":      map[string]any{"type": "string", "format": "date-time"},
+						"receipt_code":    map[string]any{"type": "string", "description": "One-time anonymous whistleblower receipt code (returned only on 201 Created)"},
 					},
 					"required": []string{"id", "municipality_id", "status", "category", "description", "created_at"},
+				},
+				"ReportTracking": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"municipality_id": map[string]any{"type": "string"},
+						"status":          map[string]any{"type": "string"},
+						"category":        map[string]any{"type": "string"},
+						"created_at":      map[string]any{"type": "string", "format": "date-time"},
+						"timeline": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"from_status": map[string]any{"type": "string"},
+									"to_status":   map[string]any{"type": "string"},
+									"action":      map[string]any{"type": "string"},
+									"occurred_at": map[string]any{"type": "string", "format": "date-time"},
+								},
+								"required": []string{"from_status", "to_status", "action", "occurred_at"},
+							},
+						},
+					},
+					"required": []string{"municipality_id", "status", "category", "created_at", "timeline"},
+				},
+				"ChainVerification": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"valid":          map[string]any{"type": "boolean"},
+						"checked_events": map[string]any{"type": "integer"},
+						"head_hash":      map[string]any{"type": "string"},
+						"broken_at_seq":  map[string]any{"type": []string{"integer", "null"}, "format": "int64"},
+						"reason":         map[string]any{"type": []string{"string", "null"}},
+					},
+					"required": []string{"valid", "checked_events", "head_hash"},
+				},
+				"AnalyzeExpensesResponse": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"total_expenses":     map[string]any{"type": "integer"},
+						"total_amount_cents": map[string]any{"type": "integer", "format": "int64"},
+						"threshold_cents":    map[string]any{"type": "integer", "format": "int64"},
+						"flag_count":         map[string]any{"type": "integer"},
+						"flags":              map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+					},
+					"required": []string{"total_expenses", "total_amount_cents", "threshold_cents", "flag_count", "flags"},
 				},
 				"CreateReportRequest": map[string]any{
 					"type": "object",

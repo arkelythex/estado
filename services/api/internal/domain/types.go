@@ -1,15 +1,24 @@
 package domain
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-const DefaultMunicipalityID = "lima"
+const (
+	DefaultMunicipalityID = "lima"
+	GenesisHash           = "0000000000000000000000000000000000000000000000000000000000000000"
+)
 
 var (
 	ErrNotFound          = errors.New("resource not found")
@@ -82,6 +91,23 @@ type Report struct {
 	Category       string    `json:"category"`
 	Description    string    `json:"description"`
 	CreatedAt      time.Time `json:"created_at"`
+	ReceiptHash    string    `json:"-"`
+	ReceiptCode    string    `json:"receipt_code,omitempty"`
+}
+
+type ReportTrackingEvent struct {
+	FromStatus string    `json:"from_status"`
+	ToStatus   string    `json:"to_status"`
+	Action     string    `json:"action"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type ReportTracking struct {
+	MunicipalityID string                `json:"municipality_id"`
+	Status         string                `json:"status"`
+	Category       string                `json:"category"`
+	CreatedAt      time.Time             `json:"created_at"`
+	Timeline       []ReportTrackingEvent `json:"timeline"`
 }
 
 type Evidence struct {
@@ -146,6 +172,67 @@ type AuditEvent struct {
 	Metadata   map[string]any `json:"metadata"`
 }
 
+type AuditChainInput struct {
+	PrevHash     string `json:"prev_hash"`
+	OccurredAt   string `json:"occurred_at"`
+	ActorType    string `json:"actor_type"`
+	ActorID      string `json:"actor_id"`
+	Action       string `json:"action"`
+	TargetType   string `json:"target_type"`
+	TargetID     string `json:"target_id"`
+	MetadataJSON string `json:"metadata_json"`
+}
+
+type AuditChainEntry struct {
+	SeqNo        int64  `json:"seq_no"`
+	PrevHash     string `json:"prev_hash"`
+	EventHash    string `json:"event_hash"`
+	OccurredAt   string `json:"occurred_at"`
+	ActorType    string `json:"actor_type"`
+	ActorID      string `json:"actor_id"`
+	Action       string `json:"action"`
+	TargetType   string `json:"target_type"`
+	TargetID     string `json:"target_id"`
+	MetadataJSON string `json:"metadata_json"`
+}
+
+type ChainVerification struct {
+	Valid         bool    `json:"valid"`
+	CheckedEvents int     `json:"checked_events"`
+	HeadHash      string  `json:"head_hash"`
+	BrokenAtSeq   *int64  `json:"broken_at_seq"`
+	Reason        *string `json:"reason"`
+}
+
+type ExpenseAnalyticsInput struct {
+	ID          string  `json:"id"`
+	Entity      string  `json:"entity"`
+	Category    string  `json:"category"`
+	AmountCents int64   `json:"amount_cents"`
+	OccurredOn  *string `json:"occurred_on,omitempty"`
+	DocRef      *string `json:"doc_ref,omitempty"`
+}
+
+type FiscalRedFlag struct {
+	RuleCode     string   `json:"rule_code"`
+	Severity     string   `json:"severity"`
+	Entity       string   `json:"entity"`
+	Category     *string  `json:"category"`
+	TotalCents   int64    `json:"total_cents"`
+	ExpenseCount int      `json:"expense_count"`
+	AffectedIDs  []string `json:"affected_ids"`
+	ShareBPS     *int64   `json:"share_bps"`
+	Summary      string   `json:"summary"`
+}
+
+type AnalyzeExpensesResponse struct {
+	TotalExpenses    int             `json:"total_expenses"`
+	TotalAmountCents int64           `json:"total_amount_cents"`
+	ThresholdCents   int64           `json:"threshold_cents"`
+	FlagCount        int             `json:"flag_count"`
+	Flags            []FiscalRedFlag `json:"flags"`
+}
+
 type TransitionResult struct {
 	FromStatus string `json:"from_status"`
 	ToStatus   string `json:"to_status"`
@@ -201,4 +288,45 @@ func NormalizeMunicipality(raw string) string {
 		return DefaultMunicipalityID
 	}
 	return trimmed
+}
+
+func updateLenPrefixed(h hash.Hash, value string) {
+	var lenBuf [8]byte
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(value)))
+	_, _ = h.Write(lenBuf[:])
+	_, _ = h.Write([]byte(value))
+}
+
+// ComputeAuditEventHash computes the canonical length-prefixed SHA-256 hash matching crates/audit.
+func ComputeAuditEventHash(input AuditChainInput) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte("civictech-audit-v1"))
+	updateLenPrefixed(h, input.PrevHash)
+	updateLenPrefixed(h, input.OccurredAt)
+	updateLenPrefixed(h, input.ActorType)
+	updateLenPrefixed(h, input.ActorID)
+	updateLenPrefixed(h, input.Action)
+	updateLenPrefixed(h, input.TargetType)
+	updateLenPrefixed(h, input.TargetID)
+	updateLenPrefixed(h, input.MetadataJSON)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// CanonicalJSON normalizes JSON into compact sorted-key representation while preserving exact numbers.
+func CanonicalJSON(raw []byte) (string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return "{}", nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return "", fmt.Errorf("decode canonical json: %w", err)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("encode canonical json: %w", err)
+	}
+	return string(out), nil
 }
