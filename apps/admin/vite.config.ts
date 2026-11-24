@@ -1,0 +1,15 @@
+import { defineConfig } from 'vite'
+import { tanstackStart } from '@tanstack/react-start/plugin/vite'
+import viteReact from '@vitejs/plugin-react'
+
+export default defineConfig({
+  server: {
+    port: 3001,
+    strictPort: true,
+  },
+  preview: {
+    port: 3001,
+    strictPort: true,
+  },
+  plugins: [tanstackStart(), viteReact()],
+})

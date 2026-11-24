@@ -10,11 +10,11 @@ values
   ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'demo-seed-checksum', now())
 on conflict (id) do nothing;
 
-insert into expense_records (id, version_id, entity, category, amount, occurred_on, doc_ref)
+insert into expense_records (id, version_id, entity, category, amount, amount_cents, occurred_on, doc_ref)
 values
-  ('33333333-3333-3333-3333-333333333331', '22222222-2222-2222-2222-222222222222', 'Municipio Demo', 'infraestructura', 1250.75, '2026-02-01', 'DOC-001'),
-  ('33333333-3333-3333-3333-333333333332', '22222222-2222-2222-2222-222222222222', 'Municipio Demo', 'servicios', 320.50, '2026-02-02', 'DOC-002'),
-  ('33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222', 'Municipio Demo', 'rrhh', 2100.00, '2026-02-03', 'DOC-003')
+  ('33333333-3333-3333-3333-333333333331', '22222222-2222-2222-2222-222222222222', 'Municipio Demo', 'infraestructura', 1250.75, 125075, '2026-02-01', 'DOC-001'),
+  ('33333333-3333-3333-3333-333333333332', '22222222-2222-2222-2222-222222222222', 'Municipio Demo', 'servicios', 320.50, 32050, '2026-02-02', 'DOC-002'),
+  ('33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222', 'Municipio Demo', 'rrhh', 2100.00, 210000, '2026-02-03', 'DOC-003')
 on conflict (id) do nothing;
 
 insert into reports (id, status, category, description, created_at)

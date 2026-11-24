@@ -136,10 +136,6 @@ func (f *fakeStore) GetPublishedReport(_ context.Context, municipalityID string,
 		if r.Status != "PUBLISHED" {
 			continue
 		}
-		ev := append([]domain.Evidence(nil), f.evidence[p.ReportID]...)
-		if ev == nil {
-			ev = make([]domain.Evidence, 0)
-		}
 		return &domain.PublicReportDetail{
 			ID:             p.ID,
 			ReportID:       p.ReportID,
@@ -148,7 +144,7 @@ func (f *fakeStore) GetPublishedReport(_ context.Context, municipalityID string,
 			Category:       r.Category,
 			PublicText:     p.PublicText,
 			PublishedAt:    p.PublishedAt,
-			Evidence:       ev,
+			EvidenceCount:  len(f.evidence[p.ReportID]),
 		}, nil
 	}
 	return nil, domain.ErrNotFound
@@ -184,7 +180,7 @@ func (f *fakeStore) AddEvidence(_ context.Context, evidence domain.Evidence, act
 		return domain.Evidence{}, domain.ErrNotFound
 	}
 	if r.Status != "DRAFT" {
-		return domain.Evidence{}, domain.ErrInvalidTransition
+		return domain.Evidence{}, fmt.Errorf("%w: cannot add evidence when report status is %s", domain.ErrInvalidTransition, r.Status)
 	}
 	f.evidence[evidence.ReportID] = append(f.evidence[evidence.ReportID], evidence)
 	f.recordAudit(actor, "evidence_attach", "evidence", evidence.ID.String(), map[string]any{
@@ -383,7 +379,7 @@ func (fakeEngine) ParseExpenses(_ context.Context, csvContent string) (domain.Pa
 type fakeSigner struct{}
 
 func (fakeSigner) PresignPut(_ context.Context, reportID uuid.UUID, contentType string, sizeBytes int64) (domain.PresignedUpload, error) {
-	_, ext, err := s3.ValidateEvidenceUpload(contentType, sizeBytes)
+	normalizedType, ext, err := s3.ValidateEvidenceUpload(contentType, sizeBytes)
 	if err != nil {
 		return domain.PresignedUpload{}, err
 	}
@@ -392,6 +388,10 @@ func (fakeSigner) PresignPut(_ context.Context, reportID uuid.UUID, contentType 
 		ObjectKey:        key,
 		UploadURL:        "https://minio.local/evidence/" + key + "?X-Amz-Signature=test",
 		ExpiresInSeconds: 900,
+		UploadHeaders: map[string]string{
+			"Content-Type":                 normalizedType,
+			"x-amz-server-side-encryption": "AES256",
+		},
 	}, nil
 }
 
@@ -630,7 +630,7 @@ func TestCitizenAndModerationLifecycleWithAuditTrail(t *testing.T) {
 	}
 	var detail domain.PublicReportDetail
 	_ = json.Unmarshal(detailRec.Body.Bytes(), &detail)
-	if detail.ReportID != created.ID || len(detail.Evidence) != 1 {
+	if detail.ReportID != created.ID || detail.EvidenceCount != 1 {
 		t.Fatalf("unexpected public detail: %#v", detail)
 	}
 

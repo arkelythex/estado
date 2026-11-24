@@ -112,7 +112,12 @@ export async function executeEvidenceUpload(
     sha256: ready.sha256,
   })
 
-  await uploadToPresigned(presigned.upload_url, ready.file, contentType)
+  await uploadToPresigned(
+    presigned.upload_url,
+    ready.file,
+    contentType,
+    presigned.upload_headers,
+  )
 
   return {
     evidenceId: presigned.evidence_id,

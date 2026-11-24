@@ -88,6 +88,7 @@ export interface AddEvidenceResponse {
   upload_url: string
   object_key: string
   expires_in_seconds: number
+  upload_headers?: Record<string, string>
 }
 
 export class ApiError extends Error {
@@ -292,17 +293,43 @@ function decodePublicReportDetail(raw: unknown): PublicReportDetail {
   return { ...summary, evidence_count: evidenceCount }
 }
 
+function decodeOptionalStringRecord(
+  obj: Record<string, unknown>,
+  key: string,
+): Record<string, string> | undefined {
+  const value = obj[key]
+  if (value === undefined) {
+    return undefined
+  }
+  if (!isRecord(value)) {
+    throw new ApiError(502, `Invalid API response: expected string map for ${key}`)
+  }
+  const out: Record<string, string> = {}
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    if (typeof entryValue !== 'string') {
+      throw new ApiError(502, `Invalid API response: expected string for ${key}.${entryKey}`)
+    }
+    out[entryKey] = entryValue
+  }
+  return out
+}
+
 function decodeAddEvidenceResponse(raw: unknown): AddEvidenceResponse {
   if (!isRecord(raw)) {
     throw new ApiError(502, 'Invalid API response: expected add evidence response')
   }
-  return {
+  const uploadHeaders = decodeOptionalStringRecord(raw, 'upload_headers')
+  const base: AddEvidenceResponse = {
     report_id: readString(raw, 'report_id'),
     evidence_id: readString(raw, 'evidence_id'),
     upload_url: readString(raw, 'upload_url'),
     object_key: readString(raw, 'object_key'),
     expires_in_seconds: readSafeInteger(raw, 'expires_in_seconds'),
   }
+  if (uploadHeaders !== undefined) {
+    base.upload_headers = uploadHeaders
+  }
+  return base
 }
 
 function mapSafeHttpErrorMessage(status: number): string {
@@ -486,12 +513,25 @@ export async function uploadEvidenceToPresignedUrl(
   uploadUrl: string,
   file: Blob,
   contentType: string,
+  uploadHeaders?: Record<string, string>,
 ): Promise<void> {
+  const headers: Record<string, string> = {}
+  let hasContentType = false
+  if (uploadHeaders) {
+    for (const [key, value] of Object.entries(uploadHeaders)) {
+      if (key.toLowerCase() === 'content-type') {
+        hasContentType = true
+      }
+      headers[key] = value
+    }
+  }
+  if (!hasContentType) {
+    headers['Content-Type'] = contentType
+  }
+
   const response = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: {
-      'Content-Type': contentType,
-    },
+    headers,
     body: file,
   })
   if (!response.ok) {

@@ -53,6 +53,49 @@ describe('report-workflow validation & async safety', () => {
     expect(resultA).toEqual({ status: 'stale' })
   })
 
+  test('executeEvidenceUpload forwards upload_headers including SSE header to presigned PUT', async () => {
+    const draft = { id: 'rep-2', municipality_id: 'lima' }
+    const ready = {
+      file: new File(['doc'], 'doc.pdf', { type: 'application/pdf' }),
+      sha256: 'd'.repeat(64),
+    }
+
+    const putCalls: Array<{
+      url: string
+      contentType: string
+      uploadHeaders?: Record<string, string>
+    }> = []
+
+    const uploaded = await executeEvidenceUpload(draft, ready, {
+      requestUpload: async () => ({
+        report_id: 'rep-2',
+        evidence_id: 'ev-2',
+        upload_url: 'https://minio.local/put-2',
+        object_key: 'reports/rep-2/ev-2.pdf',
+        expires_in_seconds: 900,
+        upload_headers: {
+          'Content-Type': 'application/pdf',
+          'x-amz-server-side-encryption': 'AES256',
+        },
+      }),
+      uploadToPresigned: async (url, _file, contentType, uploadHeaders) => {
+        putCalls.push({ url, contentType, uploadHeaders })
+      },
+    })
+
+    expect(uploaded.evidenceId).toBe('ev-2')
+    expect(putCalls).toEqual([
+      {
+        url: 'https://minio.local/put-2',
+        contentType: 'application/pdf',
+        uploadHeaders: {
+          'Content-Type': 'application/pdf',
+          'x-amz-server-side-encryption': 'AES256',
+        },
+      },
+    ])
+  })
+
   test('executeEvidenceUpload propagates presigned request and PUT upload failures', async () => {
     const draft = { id: 'rep-1', municipality_id: 'lima' }
     const ready = {

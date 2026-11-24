@@ -242,6 +242,10 @@ describe('API client URL construction, parsing, and error handling', () => {
           upload_url: 'https://minio.local/presigned',
           object_key: 'reports/rep-9/ev-1.pdf',
           expires_in_seconds: 900,
+          upload_headers: {
+            'Content-Type': 'application/pdf',
+            'x-amz-server-side-encryption': 'AES256',
+          },
         })
       }
       if (req.url === 'https://minio.local/presigned') {
@@ -278,11 +282,16 @@ describe('API client URL construction, parsing, and error handling', () => {
       baseUrl,
     )
     expect(presigned.upload_url).toBe('https://minio.local/presigned')
+    expect(presigned.upload_headers).toEqual({
+      'Content-Type': 'application/pdf',
+      'x-amz-server-side-encryption': 'AES256',
+    })
 
     await uploadEvidenceToPresignedUrl(
       presigned.upload_url,
       new Blob(['pdf-bytes'], { type: 'application/pdf' }),
       'application/pdf',
+      presigned.upload_headers,
     )
 
     const submitted = await submitReport(draft.id, 'lima', baseUrl)
@@ -293,6 +302,38 @@ describe('API client URL construction, parsing, and error handling', () => {
       'PUT https://minio.local/presigned',
       'POST http://localhost:8080/reports/rep-9/submit',
     ])
+    expect(requests[2]?.headers).toEqual({
+      'Content-Type': 'application/pdf',
+      'x-amz-server-side-encryption': 'AES256',
+    })
+  })
+
+  test('requestEvidenceUpload rejects non-string upload_headers values', async () => {
+    mockFetchOnce(() =>
+      Response.json({
+        report_id: 'rep-9',
+        evidence_id: 'ev-1',
+        upload_url: 'https://minio.local/presigned',
+        object_key: 'reports/rep-9/ev-1.pdf',
+        expires_in_seconds: 900,
+        upload_headers: {
+          'x-amz-server-side-encryption': 123,
+        },
+      }),
+    )
+
+    await expect(
+      requestEvidenceUpload(
+        'rep-9',
+        {
+          municipality_id: 'lima',
+          content_type: 'application/pdf',
+          size_bytes: 1024,
+          sha256: 'a'.repeat(64),
+        },
+        baseUrl,
+      ),
+    ).rejects.toThrow(ApiError)
   })
 
   test('throws ApiError with sanitized status message without leaking raw backend text', async () => {
