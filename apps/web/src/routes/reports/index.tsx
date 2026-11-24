@@ -77,7 +77,11 @@ function PublishedReportsPage() {
       ) : (
         <section className="report-list" aria-label="Listado de reportes públicos">
           {reports.map((report) => (
-            <article key={report.id} className="report-item">
+            <article
+              key={report.id}
+              className="report-item"
+              data-testid="public-report-card"
+            >
               <div className="report-item-header">
                 <div className="actions-row">
                   <span className="badge">{report.category}</span>

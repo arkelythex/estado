@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import {
   ApiError,
+  MODERATION_ACTION_LABELS,
+  MODERATION_ACTION_TEST_IDS,
   MODERATION_STATUS_FILTERS,
   ModerationValidationError,
   getAllowedActions,
@@ -20,13 +22,6 @@ import { getMunicipalityLabel } from '../lib/municipalities'
 export const Route = createFileRoute('/')({
   component: ModerationQueuePage,
 })
-
-const ACTION_LABELS: Record<ModerationAction, string> = {
-  TRIAGE: 'Triaje (Triage)',
-  VERIFY: 'Verificar (Verify)',
-  REJECT: 'Rechazar (Reject)',
-  PUBLISH: 'Publicar (Publish)',
-}
 
 const FILTER_LABELS: Record<StatusFilter, string> = {
   ALL: 'Todos',
@@ -362,7 +357,7 @@ function ModerationQueuePage() {
       </section>
 
       {!hasToken ? (
-        <div className="alert alert-warning" role="status">
+        <div className="alert alert-warning" role="status" aria-live="polite">
           <span className="alert-icon">
             <AlertIcon />
           </span>
@@ -476,7 +471,7 @@ function ModerationQueuePage() {
       </section>
 
       {loadError ? (
-        <div className="alert alert-error" role="alert">
+        <div className="alert alert-error" role="alert" aria-live="polite">
           <span className="alert-icon">
             <AlertIcon />
           </span>
@@ -487,7 +482,7 @@ function ModerationQueuePage() {
       ) : null}
 
       {actionSuccess ? (
-        <div className="alert alert-success" role="status">
+        <div className="alert alert-success" role="status" aria-live="polite">
           <span className="alert-icon">
             <PublishedIcon />
           </span>
@@ -503,7 +498,7 @@ function ModerationQueuePage() {
           <div className="card-header">
             <div>
               <span className="section-kicker">AUDIT ACTION</span>
-              <h2>Ejecutar {ACTION_LABELS[selectedAction]}</h2>
+              <h2>Ejecutar {MODERATION_ACTION_LABELS[selectedAction]}</h2>
               <p className="page-subtitle">
                 Reporte <span className="mono">{selectedCase.report_id}</span> · Estado actual:{' '}
                 <span className={getStatusBadgeClass(selectedCase.status)}>
@@ -530,7 +525,7 @@ function ModerationQueuePage() {
           </div>
 
           {actionError ? (
-            <div className="alert alert-error" role="alert">
+            <div className="alert alert-error" role="alert" aria-live="polite">
               <span className="alert-icon">
                 <AlertIcon />
               </span>
@@ -550,7 +545,7 @@ function ModerationQueuePage() {
               >
                 {getAllowedActions(selectedCase.status).map((allowed) => (
                   <option key={allowed} value={allowed}>
-                    {ACTION_LABELS[allowed]}
+                    {MODERATION_ACTION_LABELS[allowed]}
                   </option>
                 ))}
               </select>
@@ -562,6 +557,7 @@ function ModerationQueuePage() {
               </label>
               <textarea
                 id="moderation-reason-input"
+                data-testid="moderation-reason-input"
                 rows={3}
                 required
                 placeholder="Describe el sustento de esta decisión para el registro de auditoría..."
@@ -577,6 +573,7 @@ function ModerationQueuePage() {
                 </label>
                 <textarea
                   id="moderation-public-text-input"
+                  data-testid="moderation-public-text-input"
                   rows={4}
                   required
                   placeholder="Redacta el resumen público sin datos personales ni PII..."
@@ -589,6 +586,7 @@ function ModerationQueuePage() {
             <div className="actions-row">
               <button
                 type="submit"
+                data-testid="moderation-submit-btn"
                 className={
                   selectedAction === 'REJECT'
                     ? 'btn btn-danger'
@@ -600,7 +598,7 @@ function ModerationQueuePage() {
               >
                 {isSubmittingAction
                   ? 'Procesando...'
-                  : `Confirmar ${selectedAction}`}
+                  : `Confirmar ${MODERATION_ACTION_LABELS[selectedAction]}`}
               </button>
               <button
                 type="button"
@@ -633,7 +631,7 @@ function ModerationQueuePage() {
           </div>
         ) : (
           <div className="table-wrap">
-            <table>
+            <table data-testid="moderation-queue-table">
               <thead>
                 <tr>
                   <th>Reporte ID</th>
@@ -651,6 +649,8 @@ function ModerationQueuePage() {
                   return (
                     <tr
                       key={item.id}
+                      data-testid="case-row"
+                      data-status={item.status}
                       className={isSelected ? 'selected-row' : undefined}
                     >
                       <td className="mono">{item.report_id}</td>
@@ -682,6 +682,7 @@ function ModerationQueuePage() {
                               <button
                                 key={action}
                                 type="button"
+                                data-testid={MODERATION_ACTION_TEST_IDS[action]}
                                 className={
                                   action === 'REJECT'
                                     ? 'btn btn-danger btn-sm'
@@ -691,13 +692,7 @@ function ModerationQueuePage() {
                                 }
                                 onClick={() => openActionPanel(item, action)}
                               >
-                                {action === 'TRIAGE'
-                                  ? 'Triage'
-                                  : action === 'VERIFY'
-                                    ? 'Verify'
-                                    : action === 'REJECT'
-                                      ? 'Reject'
-                                      : 'Publish'}
+                                {MODERATION_ACTION_LABELS[action]}
                               </button>
                             ))}
                           </div>

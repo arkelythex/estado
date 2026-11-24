@@ -190,7 +190,11 @@ function ExpensesPage() {
           </div>
           <div>
             <div className="stat-label">Monto total (exacto)</div>
-            <div className="stat-value stat-value-accent mono" style={{ fontSize: '1.75rem' }}>
+            <div
+              className="stat-value stat-value-accent mono"
+              style={{ fontSize: '1.75rem' }}
+              data-testid="expenses-total"
+            >
               {formattedTotal}
             </div>
           </div>
@@ -223,6 +227,7 @@ function ExpensesPage() {
             <label htmlFor="filter-category">Categoría</label>
             <input
               id="filter-category"
+              data-testid="filter-category"
               type="text"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
@@ -251,7 +256,11 @@ function ExpensesPage() {
           </div>
 
           <div className="actions-row">
-            <button type="submit" className="btn btn-primary">
+            <button
+              type="submit"
+              className="btn btn-primary"
+              data-testid="filter-submit"
+            >
               Filtrar
             </button>
             <button
@@ -282,7 +291,7 @@ function ExpensesPage() {
           </div>
         ) : (
           <div className="table-wrap">
-            <table>
+            <table data-testid="expenses-table">
               <thead>
                 <tr>
                   <th>Entidad</th>
@@ -294,7 +303,7 @@ function ExpensesPage() {
               </thead>
               <tbody>
                 {expenses.map((expense) => (
-                  <tr key={expense.id}>
+                  <tr key={expense.id} data-testid="expense-row">
                     <td style={{ fontWeight: 500, color: '#ffffff' }}>
                       {expense.entity}
                     </td>

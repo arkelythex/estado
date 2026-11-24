@@ -14,6 +14,24 @@ export type StatusFilter = 'ALL' | Exclude<ReportStatus, 'DRAFT'>
 
 export type ModerationAction = 'TRIAGE' | 'VERIFY' | 'REJECT' | 'PUBLISH'
 
+export const MODERATION_ACTION_LABELS: Record<ModerationAction, string> = {
+  TRIAGE: 'Triaje',
+  VERIFY: 'Verificar',
+  REJECT: 'Rechazar',
+  PUBLISH: 'Publicar',
+}
+
+export const MODERATION_ACTION_TEST_IDS: Record<ModerationAction, string> = {
+  TRIAGE: 'case-action-triage',
+  VERIFY: 'case-action-verify',
+  REJECT: 'case-action-reject',
+  PUBLISH: 'case-action-publish',
+}
+
+export function formatIngestDeduplicatedStatus(deduplicated: boolean): string {
+  return deduplicated ? 'Deduplicado (idempotente)' : 'Ingesta nueva'
+}
+
 export const MODERATION_STATUS_FILTERS: readonly StatusFilter[] = [
   'ALL',
   'SUBMITTED',
