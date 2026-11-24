@@ -252,9 +252,9 @@ func (s *Store) CreateReport(ctx context.Context, report domain.Report, actor do
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO reports (id, municipality_id, status, category, description, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, report.ID, report.MunicipalityID, report.Status, report.Category, report.Description, report.CreatedAt)
+		INSERT INTO reports (id, municipality_id, status, category, description, created_at, receipt_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, report.ID, report.MunicipalityID, report.Status, report.Category, report.Description, report.CreatedAt, nullableText(report.ReceiptHash))
 	if err != nil {
 		return domain.Report{}, fmt.Errorf("insert report: %w", err)
 	}
@@ -669,6 +669,114 @@ func (s *Store) IngestExpensesIdempotent(
 	}, nil
 }
 
+func (s *Store) ListAuditChain(ctx context.Context, limit int) ([]domain.AuditChainEntry, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			seq_no,
+			prev_hash,
+			event_hash,
+			occurred_at,
+			actor_type,
+			coalesce(actor_id, ''),
+			action,
+			target_type,
+			coalesce(target_id, ''),
+			metadata::text
+		FROM audit_events
+		WHERE event_hash <> ''
+		ORDER BY seq_no ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list audit chain: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]domain.AuditChainEntry, 0)
+	for rows.Next() {
+		var entry domain.AuditChainEntry
+		var occurredAt time.Time
+		var metaText string
+		if err := rows.Scan(
+			&entry.SeqNo,
+			&entry.PrevHash,
+			&entry.EventHash,
+			&occurredAt,
+			&entry.ActorType,
+			&entry.ActorID,
+			&entry.Action,
+			&entry.TargetType,
+			&entry.TargetID,
+			&metaText,
+		); err != nil {
+			return nil, fmt.Errorf("scan audit chain entry: %w", err)
+		}
+		entry.OccurredAt = formatAuditTimestamp(occurredAt)
+		canonicalMeta, err := domain.CanonicalJSON([]byte(metaText))
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize audit metadata: %w", err)
+		}
+		entry.MetadataJSON = canonicalMeta
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit chain: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) TrackReportByReceiptHash(ctx context.Context, municipalityID, receiptHash string) (domain.ReportTracking, error) {
+	muni := domain.NormalizeMunicipality(municipalityID)
+	var reportID uuid.UUID
+	var out domain.ReportTracking
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, municipality_id, status, category, created_at
+		FROM reports
+		WHERE receipt_hash = $1 AND municipality_id = $2
+		LIMIT 1
+	`, receiptHash, muni).Scan(
+		&reportID,
+		&out.MunicipalityID,
+		&out.Status,
+		&out.Category,
+		&out.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ReportTracking{}, domain.ErrNotFound
+		}
+		return domain.ReportTracking{}, fmt.Errorf("lookup report by receipt hash: %w", err)
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT from_status, to_status, action, occurred_at
+		FROM report_status_events
+		WHERE report_id = $1
+		ORDER BY occurred_at ASC
+	`, reportID)
+	if err != nil {
+		return domain.ReportTracking{}, fmt.Errorf("list report tracking timeline: %w", err)
+	}
+	defer rows.Close()
+
+	timeline := make([]domain.ReportTrackingEvent, 0)
+	for rows.Next() {
+		var ev domain.ReportTrackingEvent
+		if err := rows.Scan(&ev.FromStatus, &ev.ToStatus, &ev.Action, &ev.OccurredAt); err != nil {
+			return domain.ReportTracking{}, fmt.Errorf("scan report tracking event: %w", err)
+		}
+		timeline = append(timeline, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.ReportTracking{}, fmt.Errorf("iterate report tracking timeline: %w", err)
+	}
+	out.Timeline = timeline
+	return out, nil
+}
+
 func upsertVerificationCase(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -708,19 +816,89 @@ func insertAuditEvent(
 	action, targetType, targetID string,
 	metadata map[string]any,
 ) error {
-	metaJSON, err := json.Marshal(metadata)
-	if err != nil {
-		return fmt.Errorf("marshal audit metadata: %w", err)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('audit_chain'))`); err != nil {
+		return fmt.Errorf("acquire audit chain lock: %w", err)
 	}
+
+	var prevHash string
+	err := tx.QueryRow(ctx, `
+		SELECT event_hash
+		FROM audit_events
+		WHERE event_hash <> ''
+		ORDER BY seq_no DESC
+		LIMIT 1
+	`).Scan(&prevHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			prevHash = domain.GenesisHash
+		} else {
+			return fmt.Errorf("lookup previous audit hash: %w", err)
+		}
+	}
+
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	occurredAt, normActorID, normTargetID, metaJSON, eventHash, err := buildAuditRecord(
+		prevHash,
+		time.Now(),
+		actor,
+		action,
+		targetType,
+		targetID,
+		metadata,
+	)
+	if err != nil {
+		return err
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audit_events
-			(id, occurred_at, actor_type, actor_id, action, target_type, target_id, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
-	`, uuid.New(), time.Now().UTC(), actor.Type, nullableText(actor.ID), action, targetType, nullableText(targetID), string(metaJSON))
+			(id, occurred_at, actor_type, actor_id, action, target_type, target_id, metadata, prev_hash, event_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+	`, uuid.New(), occurredAt, actor.Type, nullableText(normActorID), action, targetType, nullableText(normTargetID), metaJSON, prevHash, eventHash)
 	if err != nil {
 		return fmt.Errorf("insert audit event: %w", err)
 	}
 	return nil
+}
+
+func formatAuditTimestamp(t time.Time) string {
+	return t.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
+}
+
+func buildAuditRecord(
+	prevHash string,
+	now time.Time,
+	actor domain.Actor,
+	action, targetType, targetID string,
+	metadata map[string]any,
+) (occurredAt time.Time, normActorID, normTargetID, metaJSON, eventHash string, err error) {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metaRaw, err := json.Marshal(metadata)
+	if err != nil {
+		return time.Time{}, "", "", "", "", fmt.Errorf("marshal audit metadata: %w", err)
+	}
+	metaJSON, err = domain.CanonicalJSON(metaRaw)
+	if err != nil {
+		return time.Time{}, "", "", "", "", fmt.Errorf("canonicalize audit metadata: %w", err)
+	}
+	occurredAt = now.UTC().Truncate(time.Microsecond)
+	normActorID = strings.TrimSpace(actor.ID)
+	normTargetID = strings.TrimSpace(targetID)
+	eventHash = domain.ComputeAuditEventHash(domain.AuditChainInput{
+		PrevHash:     prevHash,
+		OccurredAt:   formatAuditTimestamp(occurredAt),
+		ActorType:    actor.Type,
+		ActorID:      normActorID,
+		Action:       action,
+		TargetType:   targetType,
+		TargetID:     normTargetID,
+		MetadataJSON: metaJSON,
+	})
+	return occurredAt, normActorID, normTargetID, metaJSON, eventHash, nil
 }
 
 func nullableText(v string) *string {

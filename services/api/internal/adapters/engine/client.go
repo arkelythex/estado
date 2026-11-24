@@ -43,6 +43,19 @@ type parseExpensesReq struct {
 	CSV string `json:"csv"`
 }
 
+type auditHashResp struct {
+	EventHash string `json:"event_hash"`
+}
+
+type verifyChainReq struct {
+	Entries []domain.AuditChainEntry `json:"entries"`
+}
+
+type analyzeExpensesReq struct {
+	ThresholdCents *int64                         `json:"threshold_cents,omitempty"`
+	Expenses       []domain.ExpenseAnalyticsInput `json:"expenses"`
+}
+
 type engineErrorResp struct {
 	Error string `json:"error"`
 }
@@ -64,6 +77,44 @@ func (c *Client) ParseExpenses(ctx context.Context, csvContent string) (domain.P
 	var out domain.ParsedExpenses
 	if err := c.postJSON(ctx, "/internal/v1/ingest/parse-expenses", payload, &out); err != nil {
 		return domain.ParsedExpenses{}, err
+	}
+	return out, nil
+}
+
+func (c *Client) ComputeAuditHash(ctx context.Context, input domain.AuditChainInput) (string, error) {
+	var out auditHashResp
+	if err := c.postJSON(ctx, "/internal/v1/audit/hash", input, &out); err != nil {
+		return "", err
+	}
+	return out.EventHash, nil
+}
+
+func (c *Client) VerifyAuditChain(ctx context.Context, entries []domain.AuditChainEntry) (domain.ChainVerification, error) {
+	if entries == nil {
+		entries = make([]domain.AuditChainEntry, 0)
+	}
+	payload := verifyChainReq{Entries: entries}
+	var out domain.ChainVerification
+	if err := c.postJSON(ctx, "/internal/v1/audit/verify-chain", payload, &out); err != nil {
+		return domain.ChainVerification{}, err
+	}
+	return out, nil
+}
+
+func (c *Client) AnalyzeExpenses(ctx context.Context, thresholdCents *int64, expenses []domain.ExpenseAnalyticsInput) (domain.AnalyzeExpensesResponse, error) {
+	if expenses == nil {
+		expenses = make([]domain.ExpenseAnalyticsInput, 0)
+	}
+	payload := analyzeExpensesReq{
+		ThresholdCents: thresholdCents,
+		Expenses:       expenses,
+	}
+	var out domain.AnalyzeExpensesResponse
+	if err := c.postJSON(ctx, "/internal/v1/analytics/red-flags", payload, &out); err != nil {
+		return domain.AnalyzeExpensesResponse{}, err
+	}
+	if out.Flags == nil {
+		out.Flags = make([]domain.FiscalRedFlag, 0)
 	}
 	return out, nil
 }

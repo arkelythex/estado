@@ -19,11 +19,16 @@ type Store interface {
 	PublishReport(ctx context.Context, id uuid.UUID, municipalityID, fromStatus, publicText, actorID, reason string) (domain.Publication, error)
 	ListModerationCases(ctx context.Context, municipalityID string, statusFilter string) ([]domain.ModerationCase, error)
 	IngestExpensesIdempotent(ctx context.Context, municipalityID, sourceKind, checksum string, rows []domain.IngestRow, actorID string) (domain.IngestResult, error)
+	ListAuditChain(ctx context.Context, limit int) ([]domain.AuditChainEntry, error)
+	TrackReportByReceiptHash(ctx context.Context, municipalityID, receiptHash string) (domain.ReportTracking, error)
 }
 
 type EngineClient interface {
 	TransitionReport(ctx context.Context, currentStatus, action string) (domain.TransitionResult, error)
 	ParseExpenses(ctx context.Context, csvContent string) (domain.ParsedExpenses, error)
+	ComputeAuditHash(ctx context.Context, input domain.AuditChainInput) (string, error)
+	VerifyAuditChain(ctx context.Context, entries []domain.AuditChainEntry) (domain.ChainVerification, error)
+	AnalyzeExpenses(ctx context.Context, thresholdCents *int64, expenses []domain.ExpenseAnalyticsInput) (domain.AnalyzeExpensesResponse, error)
 }
 
 type StorageSigner interface {

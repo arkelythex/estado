@@ -28,16 +28,19 @@ type fakeStore struct {
 	datasets     []domain.Dataset
 	expenses     []domain.Expense
 	reports      map[uuid.UUID]domain.Report
+	statusEvents map[uuid.UUID][]domain.ReportTrackingEvent
 	evidence     map[uuid.UUID][]domain.Evidence
 	publications map[uuid.UUID]domain.Publication
 	cases        map[uuid.UUID]domain.ModerationCase
 	versionsByCS map[string]uuid.UUID
 	auditEvents  []domain.AuditEvent
+	auditChain   []domain.AuditChainEntry
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
 		reports:      make(map[uuid.UUID]domain.Report),
+		statusEvents: make(map[uuid.UUID][]domain.ReportTrackingEvent),
 		evidence:     make(map[uuid.UUID][]domain.Evidence),
 		publications: make(map[uuid.UUID]domain.Publication),
 		cases:        make(map[uuid.UUID]domain.ModerationCase),
@@ -48,15 +51,49 @@ func newFakeStore() *fakeStore {
 func (f *fakeStore) recordAudit(actor domain.Actor, action, targetType, targetID string, meta map[string]any) {
 	actorID := actor.ID
 	tid := targetID
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	f.auditEvents = append(f.auditEvents, domain.AuditEvent{
 		ID:         uuid.New(),
-		OccurredAt: time.Now().UTC(),
+		OccurredAt: now,
 		ActorType:  actor.Type,
 		ActorID:    &actorID,
 		Action:     action,
 		TargetType: targetType,
 		TargetID:   &tid,
 		Metadata:   meta,
+	})
+
+	prevHash := domain.GenesisHash
+	if len(f.auditChain) > 0 {
+		prevHash = f.auditChain[len(f.auditChain)-1].EventHash
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	metaRaw, _ := json.Marshal(meta)
+	metaJSON, _ := domain.CanonicalJSON(metaRaw)
+	occStr := now.UTC().Format(time.RFC3339Nano)
+	eventHash := domain.ComputeAuditEventHash(domain.AuditChainInput{
+		PrevHash:     prevHash,
+		OccurredAt:   occStr,
+		ActorType:    actor.Type,
+		ActorID:      strings.TrimSpace(actor.ID),
+		Action:       action,
+		TargetType:   targetType,
+		TargetID:     strings.TrimSpace(targetID),
+		MetadataJSON: metaJSON,
+	})
+	f.auditChain = append(f.auditChain, domain.AuditChainEntry{
+		SeqNo:        int64(len(f.auditChain) + 1),
+		PrevHash:     prevHash,
+		EventHash:    eventHash,
+		OccurredAt:   occStr,
+		ActorType:    actor.Type,
+		ActorID:      strings.TrimSpace(actor.ID),
+		Action:       action,
+		TargetType:   targetType,
+		TargetID:     strings.TrimSpace(targetID),
+		MetadataJSON: metaJSON,
 	})
 }
 
@@ -203,6 +240,12 @@ func (f *fakeStore) TransitionReport(_ context.Context, id uuid.UUID, municipali
 	f.reports[id] = r
 
 	now := time.Now().UTC()
+	f.statusEvents[id] = append(f.statusEvents[id], domain.ReportTrackingEvent{
+		FromStatus: fromStatus,
+		ToStatus:   toStatus,
+		Action:     action,
+		OccurredAt: now,
+	})
 	notes := reason
 	assigned := actorID
 	mc := f.cases[id]
@@ -254,6 +297,12 @@ func (f *fakeStore) PublishReport(_ context.Context, id uuid.UUID, municipalityI
 		PublishedAt:    time.Now().UTC(),
 	}
 	f.publications[pub.ID] = pub
+	f.statusEvents[id] = append(f.statusEvents[id], domain.ReportTrackingEvent{
+		FromStatus: fromStatus,
+		ToStatus:   "PUBLISHED",
+		Action:     "PUBLISH",
+		OccurredAt: pub.PublishedAt,
+	})
 
 	mc := f.cases[id]
 	mc.Status = "PUBLISHED"
@@ -334,7 +383,134 @@ func (f *fakeStore) IngestExpensesIdempotent(_ context.Context, municipalityID, 
 	}, nil
 }
 
+func (f *fakeStore) ListAuditChain(_ context.Context, limit int) ([]domain.AuditChainEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 || limit > len(f.auditChain) {
+		limit = len(f.auditChain)
+	}
+	out := make([]domain.AuditChainEntry, limit)
+	copy(out, f.auditChain[:limit])
+	return out, nil
+}
+
+func (f *fakeStore) TrackReportByReceiptHash(_ context.Context, municipalityID, receiptHash string) (domain.ReportTracking, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	muni := domain.NormalizeMunicipality(municipalityID)
+	for _, r := range f.reports {
+		if r.MunicipalityID == muni && r.ReceiptHash != "" && r.ReceiptHash == receiptHash {
+			ev := f.statusEvents[r.ID]
+			timeline := make([]domain.ReportTrackingEvent, len(ev))
+			copy(timeline, ev)
+			return domain.ReportTracking{
+				MunicipalityID: r.MunicipalityID,
+				Status:         r.Status,
+				Category:       r.Category,
+				CreatedAt:      r.CreatedAt,
+				Timeline:       timeline,
+			}, nil
+		}
+	}
+	return domain.ReportTracking{}, domain.ErrNotFound
+}
+
 type fakeEngine struct{}
+
+func (fakeEngine) ComputeAuditHash(_ context.Context, input domain.AuditChainInput) (string, error) {
+	return domain.ComputeAuditEventHash(input), nil
+}
+
+func (fakeEngine) VerifyAuditChain(_ context.Context, entries []domain.AuditChainEntry) (domain.ChainVerification, error) {
+	if len(entries) == 0 {
+		return domain.ChainVerification{
+			Valid:         true,
+			CheckedEvents: 0,
+			HeadHash:      domain.GenesisHash,
+		}, nil
+	}
+	for i, e := range entries {
+		expectedPrev := domain.GenesisHash
+		if i > 0 {
+			expectedPrev = entries[i-1].EventHash
+		}
+		if e.PrevHash != expectedPrev {
+			reason := "broken prev_hash link"
+			if i == 0 {
+				reason = "invalid genesis prev_hash"
+			}
+			seq := e.SeqNo
+			return domain.ChainVerification{
+				Valid:         false,
+				CheckedEvents: i + 1,
+				HeadHash:      expectedPrev,
+				BrokenAtSeq:   &seq,
+				Reason:        &reason,
+			}, nil
+		}
+		expectedHash := domain.ComputeAuditEventHash(domain.AuditChainInput{
+			PrevHash:     e.PrevHash,
+			OccurredAt:   e.OccurredAt,
+			ActorType:    e.ActorType,
+			ActorID:      e.ActorID,
+			Action:       e.Action,
+			TargetType:   e.TargetType,
+			TargetID:     e.TargetID,
+			MetadataJSON: e.MetadataJSON,
+		})
+		if e.EventHash != expectedHash {
+			reason := "event_hash mismatch"
+			seq := e.SeqNo
+			return domain.ChainVerification{
+				Valid:         false,
+				CheckedEvents: i + 1,
+				HeadHash:      expectedPrev,
+				BrokenAtSeq:   &seq,
+				Reason:        &reason,
+			}, nil
+		}
+	}
+	return domain.ChainVerification{
+		Valid:         true,
+		CheckedEvents: len(entries),
+		HeadHash:      entries[len(entries)-1].EventHash,
+	}, nil
+}
+
+func (fakeEngine) AnalyzeExpenses(_ context.Context, thresholdCents *int64, expenses []domain.ExpenseAnalyticsInput) (domain.AnalyzeExpensesResponse, error) {
+	threshold := int64(4_280_000)
+	if thresholdCents != nil {
+		if *thresholdCents <= 0 {
+			return domain.AnalyzeExpensesResponse{}, fmt.Errorf("%w: invalid threshold_cents", domain.ErrValidation)
+		}
+		threshold = *thresholdCents
+	}
+	var total int64
+	for _, e := range expenses {
+		total += e.AmountCents
+	}
+	flags := make([]domain.FiscalRedFlag, 0)
+	if len(expenses) >= 2 && total >= threshold {
+		cat := expenses[0].Category
+		flags = append(flags, domain.FiscalRedFlag{
+			RuleCode:     "CONTRACT_SPLITTING",
+			Severity:     "HIGH",
+			Entity:       expenses[0].Entity,
+			Category:     &cat,
+			TotalCents:   total,
+			ExpenseCount: len(expenses),
+			AffectedIDs:  []string{expenses[0].ID, expenses[1].ID},
+			Summary:      "Multiple below-threshold disbursements to the same entity and category exceed procurement threshold",
+		})
+	}
+	return domain.AnalyzeExpensesResponse{
+		TotalExpenses:    len(expenses),
+		TotalAmountCents: total,
+		ThresholdCents:   threshold,
+		FlagCount:        len(flags),
+		Flags:            flags,
+	}, nil
+}
 
 func (fakeEngine) TransitionReport(_ context.Context, currentStatus, action string) (domain.TransitionResult, error) {
 	rules := map[string]string{
