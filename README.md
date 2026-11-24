@@ -1,25 +1,36 @@
 # CivicTech Peru (`estado`)
 
-Open-source, **AI-Agent-First** civic tech platform for Peru: public fiscal transparency, cryptographic audit chains, OCDS 1.1 contracting exports, deterministic fiscal red-flag detection, and privacy-preserving citizen whistleblowing.
+[![License: MIT](https://img.shields.io/badge/License-MIT-00e5ff.svg)](LICENSE)
+[![Rust Engine](https://img.shields.io/badge/Engine-Rust%20(Axum)-dea584.svg)](https://www.rust-lang.org/)
+[![Go API](https://img.shields.io/badge/API-Go%201.24%20(Hexagonal)-00ADD8.svg)](https://go.dev/doc/)
+[![Frontend](https://img.shields.io/badge/Frontend-Bun%20%2B%20TanStack%20Start-10b981.svg)](https://tanstack.com/start/latest)
+[![OCDS 1.1](https://img.shields.io/badge/Standard-OCDS%201.1-0ea5e9.svg)](https://standard.open-contracting.org/latest/en/)
+[![OpenAPI 3.1](https://img.shields.io/badge/OpenAPI-3.1.0-6BA539.svg)](https://spec.openapis.org/oas/v3.1.0)
+[![MCP Ready](https://img.shields.io/badge/AI--First-MCP%20(13%20Tools)-8b5cf6.svg)](https://modelcontextprotocol.io/)
+
+Open-source, **AI-Agent-First** civic tech platform for Peru: public fiscal transparency, cryptographic SHA-256 audit chains, **OCDS 1.1** contracting exports, deterministic **Rust** fiscal red-flag detection, and privacy-preserving citizen whistleblowing with anonymous receipts.
 
 <p align="center">
-  <img src="apps/web/public/images/ui/interface-desktop.png" alt="CivicTech Peru — Dark Obsidian Citizen Transparency Dashboard" width="100%" />
+  <img src="apps/web/public/images/ui/interface-desktop.png" alt="CivicTech Peru — Dark Obsidian Citizen Transparency Dashboard (1884x957)" width="100%" />
 </p>
 
-## Live End-to-End Walkthrough (Zero → Advanced)
+---
 
-Recorded directly with `ego-browser` running against the full live stack (**Postgres 16 + RustFS S3 `AES256` + Rust Critical Engine + Go Hexagonal API + Bun/TanStack Start**):
-1. **Citizen Portal (`:3000`)**: KPIs, live cryptographic **Audit Chain (`VERIFIED CHAIN`)**, **Fiscal Red Flags**, and **OCDS 1.1 JSON** export.
-2. **Public Expenses Explorer (`/expenses`)**: category filtering with exact integer-cent `PEN` (`S/`) totals.
-3. **Anonymous Citizen Report (`/report`)**: draft creation → submission → one-time **Anonymous Receipt Code (`XXXX-XXXX-XXXX-XXXX`)**.
-4. **Moderation & Ingest Console (`:3001`)**: Bearer auth → **Triaje → Verificar → Publicar** with auditable reason & redacted public text → idempotent CSV ingest (`Deduplicado (idempotente)`).
-5. **Public Feed & Anonymous Tracker (`/reports`)**: newly published report live + anonymous tracking via `X-Receipt-Code` showing `DRAFT → SUBMITTED → TRIAGED → VERIFIED → PUBLISHED`.
+## End-to-End Walkthrough (Zero → Advanced)
+
+Recorded live in native **1440×810 HD** against the complete running stack (**PostgreSQL 16 + RustFS S3 `AES256` + Rust Critical Engine + Go Hexagonal API + Bun/TanStack Start**):
+
+1. **Citizen Portal (`:3000`)**: Live KPIs, cryptographic **Audit Chain (`VERIFIED CHAIN`)**, **Fiscal Red Flags** (`HIGH_ENTITY_CONCENTRATION`), and **OCDS 1.1 JSON** export.
+2. **Public Expenses Explorer (`/expenses`)**: Filter by entity, category, or date range with exact integer-cent `PEN` (`S/`) totals (`BigInt`, zero floating-point drift).
+3. **Anonymous Citizen Report (`/report`)**: Create draft → optional client-side SHA-256 evidence upload (`AES256`) → submit → receive one-time **Anonymous Receipt Code (`XXXX-XXXX-XXXX-XXXX`)**.
+4. **Moderation & Ingest Console (`:3001`)**: In-memory Bearer auth → **Triaje → Verificar → Publicar** with mandatory auditable `reason` & redacted `public_text` → idempotent CSV ingest (`Deduplicado (idempotente)`).
+5. **Public Feed & Anonymous Tracker (`/reports`)**: Newly published report live + anonymous tracking via `X-Receipt-Code` showing the full verified lifecycle (`DRAFT → SUBMITTED → TRIAGED → VERIFIED → PUBLISHED`).
 
 <p align="center">
-  <img src="docs/media/civictech-demo.gif" alt="CivicTech Peru end-to-end interactive walkthrough" width="100%" />
+  <img src="docs/media/civictech-demo.gif" alt="CivicTech Peru — Zero to Advanced Interactive Walkthrough" width="100%" />
 </p>
 
-- **Full HD Video (1280×650 H.264 MP4)**: [`docs/media/civictech-demo.mp4`](docs/media/civictech-demo.mp4)
+> **Full Native HD Video (1440×810, H.264 High Profile, CRF 18, 3.1 MB)**: [`docs/media/civictech-demo.mp4`](docs/media/civictech-demo.mp4)
 
 ### Moderation & Admin Console (`apps/admin`)
 
@@ -29,68 +40,83 @@ Recorded directly with `ego-browser` running against the full live stack (**Post
 
 ---
 
-## Polyglot Architecture (Go + Rust + Bun/TanStack Start + MCP)
+## Polyglot Hexagonal Architecture
 
 ![CivicTech Peru architecture](docs/diagrams/estado.architecture.light.svg#gh-light-mode-only)
 ![CivicTech Peru architecture](docs/diagrams/estado.architecture.dark.svg#gh-dark-mode-only)
 
-- **Rust Critical Engine (`crates/audit`, `crates/domain`, `crates/ingest`, `crates/engine`, `:8090`)**:
-  - Bearer-authenticated internal HTTP service with zero floating-point money/percentages (`i64`/`i128`).
-  - Deterministic report lifecycle state machine (`DRAFT → SUBMITTED → TRIAGED → VERIFIED → PUBLISHED` / `REJECTED`).
-  - Pure CSV expense parser with exact `amount_cents`, strict `YYYY-MM-DD` validation, and SHA-256 checksums.
-  - Length-prefixed SHA-256 **Cryptographic Audit Hash Chain** (`compute_event_hash`, `verify_chain`).
-  - Deterministic **OCDS Fiscal Red-Flag Engine** (`CONTRACT_SPLITTING`, `DUPLICATE_DISBURSEMENT`, `HIGH_ENTITY_CONCENTRATION`).
-- **Go Hexagonal Backend API (`services/api`, `:8080`)**:
-  - Parameterized `pgxpool` PostgreSQL store scoped by `municipality_id`, transactional hash-chained `audit_events`, and race-safe idempotent ingestion (`pg_advisory_xact_lock` + `ON CONFLICT`).
-  - **Anonymous Whistleblower Receipts**: one-time `receipt_code` (stored only as SHA-256) + PII-free `GET /public/reports/track` via `X-Receipt-Code`.
-  - **OCDS 1.1 Export** (`GET /public/ocds/releases.json`), **Audit Chain Verification** (`GET /public/audit/verify`), and **Fiscal Red Flags** (`GET /public/anomalies`).
-  - **RustFS S3 (`:9000`)** presigned uploads with enforced `AES256` server-side encryption, MIME allowlist, and mandatory `size_bytes` (`1 B – 10 MiB`).
-  - Hardened OIDC JWKS auth (`singleflight` coalescing + unknown-`kid` refresh cooldown + fail-closed issuer/audience), per-IP `429` rate limiting, and SHA-256 payload-bound `Idempotency-Key` (`409` on mismatch).
-- **Frontends (`apps/web` `:3000`, `apps/admin` `:3001`)**:
-  - **Bun + TanStack Start** in strict TypeScript (zero `any`, zero `console.log`, `BigInt` currency & percentages, runtime response decoders).
-  - CivicTech **Dark Obsidian Design System** (`packages/tokens/tokens.json`) with desktop sidebar + responsive mobile bottom navigation.
-  - Agent-ready DOM semantics (`data-testid`, `data-state`, `data-status`, `data-deduplicated`, `aria-live="polite"`) and `apps/web/public/llms.txt`.
-- **AI-Agent-First Discovery & MCP Server (`services/mcp`)**:
-  - Live API discovery: `GET /openapi.json` (OpenAPI 3.1), `GET /llms.txt`, `GET /.well-known/agent.json`.
-  - Bun TypeScript **MCP (Model Context Protocol, JSON-RPC 2.0 over stdio)** server exposing **13 typed tools** (`list_datasets`, `query_expenses`, `list_public_reports`, `get_public_report`, `create_report`, `submit_report`, `track_report_by_receipt`, `verify_audit_chain`, `detect_spending_anomalies`, `export_ocds_releases`, `list_moderation_cases`, `moderate_case`, `run_demo_ingest`).
+| Layer | Technology | Port | Responsibility |
+| :--- | :--- | :---: | :--- |
+| **Critical Domain Engine** (`crates/*`) | [Rust](https://doc.rust-lang.org/) (Axum, `sha2`, `csv`) | `:8090` | Deterministic report state machine, pure exact-cents (`i64`) CSV ingest, length-prefixed SHA-256 **Audit Hash Chain**, and exact `i64`/`i128` **OCDS Fiscal Red-Flag** rules |
+| **Backend HTTP API** (`services/api`) | [Go 1.24](https://go.dev/doc/) (`net/http`, `pgx/v5`, AWS SDK v2) | `:8080` | Hexagonal ports/adapters, `municipality_id`-scoped Postgres queries, transactional hash-chained `audit_events`, OIDC JWKS (`singleflight` + cooldown), RustFS `AES256` presigned URLs, per-IP `429` rate limiter, OCDS 1.1 export, and AI-First discovery |
+| **Citizen Web App** (`apps/web`) | [Bun](https://bun.sh/docs) + [TanStack Start](https://tanstack.com/start/latest) | `:3000` | Dark Obsidian transparency portal (`packages/tokens/tokens.json`), exact `BigInt` PEN formatting, browser SHA-256 uploads, anonymous receipt banner & tracker, `/llms.txt` |
+| **Moderation Console** (`apps/admin`) | [Bun](https://bun.sh/docs) + [TanStack Start](https://tanstack.com/start/latest) | `:3001` | Scope-isolated moderation queue (`Triaje`/`Verificar`/`Rechazar`/`Publicar`), in-memory Bearer token auth, idempotent CSV ingest console |
+| **MCP Server** (`services/mcp`) | [MCP](https://modelcontextprotocol.io/) (Bun + strict TypeScript) | `stdio` | JSON-RPC 2.0 server exposing **13 typed tools** for AI agents with HTTPS non-loopback enforcement and explicit DTO projection |
+| **Data & Storage** (`infra/`) | [PostgreSQL 16](https://www.postgresql.org/docs/16/), [RustFS S3](https://docs.rustfs.com/), Redis 7, Keycloak, Grafana | `:5432` / `:9000` / `:3002` | Migrations `0001`–`0004`, enforced default `AES256` bucket encryption, OIDC realm, Prometheus & Grafana dashboards |
 
 ---
 
-## Repo Layout
-- `crates/`: Rust critical engines (`domain`, `audit`, `ingest`, `verify`, `engine`, `observability`)
-- `services/api/`: Go hexagonal HTTP API (`cmd/api`, `internal/{domain,ports,adapters,auth,httpapi}`)
-- `services/mcp/`: Bun TypeScript MCP server (13 typed AI-agent tools)
-- `apps/web/` & `apps/admin/`: Bun + TanStack Start frontends (Dark Obsidian UI)
-- `packages/tokens/`: Design tokens (`tokens.json`)
-- `infra/`: `docker-compose.yml` (Postgres 16, RustFS S3 `AES256`, Redis 7, Keycloak, Prometheus, Grafana `:3002`), SQL migrations `0001`–`0004`, seeds
-- `docs/`: Architecture, ADRs, RFCs, MVP specs, diagrams, and demo media (`docs/media/`)
+## AI-Agent-First Discovery & MCP Tools
 
-## Run Locally
-1. Copy `configs/env.example` to `.env` and fill local secrets (`POSTGRES_PASSWORD`, `MINIO_ROOT_PASSWORD`, `RUSTFS_SSE_S3_MASTER_KEY`, `KEYCLOAK_*`, `GF_SECURITY_ADMIN_PASSWORD`, `ENGINE_INTERNAL_TOKEN`, `AUTH_DEV_ADMIN_TOKEN`, `AUTH_DEV_MODERATOR_TOKEN`).
-2. Start infra & run migrations + seed:
+### Machine-Readable Discovery Endpoints (`http://localhost:8080`)
+- `GET /openapi.json` — Live [OpenAPI 3.1.0](https://spec.openapis.org/oas/v3.1.0) specification covering all public, citizen, moderation, and admin endpoints.
+- `GET /llms.txt` & `http://localhost:3000/llms.txt` — Concise agent operational guides (state machine, auth, exact-cent rules, `data-testid` map).
+- `GET /.well-known/agent.json` — Structured agent capability manifest (auth modes, `Idempotency-Key`, `X-Receipt-Code`, lifecycle transitions).
+- `GET /public/ocds/releases.json?municipality_id=lima` — [OCDS 1.1](https://standard.open-contracting.org/latest/en/) contracting release package with exact `json.Number` amounts.
+- `GET /public/audit/verify` — Live cryptographic audit hash-chain verification via Rust engine.
+- `GET /public/anomalies?municipality_id=lima` — Deterministic fiscal red flags (`CONTRACT_SPLITTING`, `DUPLICATE_DISBURSEMENT`, `HIGH_ENTITY_CONCENTRATION`).
+
+### MCP Server (`services/mcp` — 13 Typed Tools)
+Run over stdio for Claude, Pi, Cursor, or Codex:
+```bash
+CIVICTECH_API_URL=http://127.0.0.1:8080 bun run services/mcp/src/index.ts
+```
+- **Public & Transparency**: `list_datasets`, `query_expenses`, `list_public_reports`, `get_public_report`, `verify_audit_chain`, `detect_spending_anomalies`, `export_ocds_releases`
+- **Citizen Reporting**: `create_report` (supports `Idempotency-Key`, returns one-time `receipt_code`), `submit_report`, `track_report_by_receipt` (`X-Receipt-Code`)
+- **Moderation & Admin** (requires `CIVICTECH_API_TOKEN`): `list_moderation_cases`, `moderate_case`, `run_demo_ingest`
+
+---
+
+## Security, Privacy & Audit Guarantees
+
+- **Zero Floating-Point Money or Percentages**: Rust uses `i64`/`i128`, Go uses `int64` + `json.Number`, TypeScript uses `Number.isSafeInteger` + `BigInt`.
+- **Cryptographic Audit Trail**: Every mutation on reports, evidence, or ingest writes a transactional `audit_events` row chained via length-prefixed SHA-256 (`prev_hash → event_hash`) verified by `crates/audit`.
+- **Strict State Machine**: `DRAFT → SUBMITTED → TRIAGED → VERIFIED → PUBLISHED` (or `REJECTED`), enforced deterministically in Rust; invalid transitions return `422` with `allowed_actions`.
+- **Privacy & Whistleblower Protection**: Public endpoints omit internal `storage_ref`, `sha256`, and `report_id` (exposing `evidence_count` only); anonymous `receipt_code` is stored solely as SHA-256 and never logged; error responses are sanitized.
+- **Zero Hardcoded Secrets**: All credentials are env-required (including `infra/docker-compose.yml` and CI ephemeral masked secrets); `evidence` bucket enforces default `AES256` encryption at rest.
+- **Multi-Tenant Scoping & Resilience**: Every query scopes by `municipality_id`; OIDC JWKS uses `singleflight` coalescing + unknown-`kid` cooldown; public write/track endpoints enforce per-IP `429` rate limiting and SHA-256 payload-bound `Idempotency-Key` (`409`).
+
+---
+
+## Quick Start (Local Development)
+
+1. **Configure local environment** (copy `configs/env.example` to `.env` and fill local secrets):
+   ```bash
+   cp configs/env.example .env
+   ```
+2. **Start infrastructure (PostgreSQL 16 + RustFS S3 `AES256`) and apply migrations + seed**:
    ```bash
    make infra-up && make migrate && make seed
    ```
-3. Start the full stack (Rust Engine `:8090`, Go API `:8080`, Web `:3000`, Admin `:3001`):
+3. **Start all services together** (Rust Engine `:8090`, Go API `:8080`, Web `:3000`, Admin `:3001`):
    ```bash
    make dev
    ```
-4. Run full quality suite (TypeScript strict typecheck, Bun unit tests, Vite client+SSR builds, Go `gofmt`/`go vet`/`go test`/`go build`, Rust `cargo fmt`/`clippy -D warnings`/`cargo test`):
+4. **Run the complete quality gate** (strict TypeScript, Bun tests, Vite client+SSR builds, Go `gofmt`/`go vet`/`go test -race`/`go build`, Rust `cargo fmt`/`clippy -D warnings`/`cargo test`):
    ```bash
    bun run quality:check
    cd services/mcp && bunx tsc --noEmit && bun test
    ```
-5. Run live DB-audited smoke tests:
+5. **Run live DB-audited smoke tests** (verifies RBAC, 422 transitions, cross-tenant 404s, and parameterized `audit_events` invariants in Postgres):
    ```bash
    bun run smoke:e2e
    bun run smoke:workflow-b
    bun run smoke:rbac
    ```
-6. Run the MCP Server for AI agents:
-   ```bash
-   CIVICTECH_API_URL=http://127.0.0.1:8080 bun run services/mcp/src/index.ts
-   ```
 
-## Principles & Documentation
-- Non-partisan, public-interest, auditability by default, privacy & data minimization, open standards (OCDS 1.1, OpenAPI 3.1, MCP).
-- Docs index: `docs/README.md` · Vision: `docs/VISION.md` · Architecture: `docs/ARCHITECTURE/OVERVIEW.md` · Security: `SECURITY.md` · Contributing: `CONTRIBUTING.md` · License: `MIT` (`LICENSE`).
+---
+
+## Documentation & Official References
+- **Project Docs**: [`docs/README.md`](docs/README.md) · [`docs/VISION.md`](docs/VISION.md) · [`docs/ARCHITECTURE/OVERVIEW.md`](docs/ARCHITECTURE/OVERVIEW.md) · [`AGENTS.md`](AGENTS.md) · [`SECURITY.md`](SECURITY.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- **Standards & Specs**: [Open Contracting Data Standard (OCDS 1.1)](https://standard.open-contracting.org/latest/en/) · [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0) · [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) · [TanStack Start](https://tanstack.com/start/latest) · [Rust](https://doc.rust-lang.org/) · [Go](https://go.dev/doc/) · [RustFS Encryption](https://docs.rustfs.com/en/security-compliance/encryption)
+- **License**: [MIT](LICENSE)
