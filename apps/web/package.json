@@ -1,22 +1,27 @@
 {
   "name": "@apps/web",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev -p 3000",
-    "build": "next build",
-    "start": "next start -p 3000",
-    "lint": "next lint"
+    "dev": "vite dev --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --port 3000",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "next": "15.1.6",
-    "react": "19.0.0",
-    "react-dom": "19.0.0"
+    "@tanstack/react-router": "^1.170.46",
+    "@tanstack/react-start": "^1.169.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "typescript": "5.7.3",
-    "eslint": "9.20.1",
-    "eslint-config-next": "15.1.6",
-    "@types/react": "19.0.8",
-    "@types/node": "22.13.4"
+    "@types/bun": "^1.4.5",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^5.7.3",
+    "vite": "^8.3.8"
   }
 }
